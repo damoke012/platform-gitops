@@ -13,7 +13,7 @@ provisioning.
 
 Successfully configured NFS storage backend with dynamic provisioning capability. Encountered and resolved complex
 read-only filesystem issues through systematic troubleshooting of NFS exports, SELinux contexts, OpenShift SCCs, and
-volume mount configurations.
+  volume mount configurations.
 
 ## Environment Status
 
