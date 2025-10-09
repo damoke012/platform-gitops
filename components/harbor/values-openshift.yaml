@@ -1,0 +1,44 @@
+expose:
+  type: clusterIP
+  tls:
+    enabled: false
+  clusterIP:
+    name: harbor
+    ports:
+      httpPort: 80
+
+externalURL: https://harbor.apps.lab.ocp.lan
+
+persistence:
+  enabled: true
+  resourcePolicy: keep
+  persistentVolumeClaim:
+    registry:
+      storageClass: nfs-harbor
+      size: 50Gi
+    database:
+      storageClass: nfs-harbor
+      size: 5Gi
+    redis:
+      storageClass: nfs-harbor
+      size: 2Gi
+    trivy:
+      storageClass: nfs-harbor
+      size: 5Gi
+
+harborAdminPassword: Harbor12345
+
+database:
+  type: internal
+
+redis:
+  type: internal
+
+trivy:
+  enabled: true
+
+notary:
+  enabled: false
+
+metrics:
+  enabled: false
