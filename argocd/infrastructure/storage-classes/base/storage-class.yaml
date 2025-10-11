@@ -1,0 +1,9 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: harbor-storage
+provisioner: PROVISIONER_REPLACE
+parameters:
+  type: TYPE_REPLACE
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
