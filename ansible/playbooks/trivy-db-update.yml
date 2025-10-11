@@ -1,0 +1,62 @@
+---
+# Trivy Database Update Playbook (Airgapped)
+# Run weekly to update vulnerability databases
+# Usage: ansible-playbook trivy-db-update.yml
+
+- name: Update Trivy Vulnerability Databases
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    trivy_db_dir: /root/trivy-offline-db
+    harbor_namespace: harbor
+    trivy_pod_name: harbor-trivy-0
+
+  tasks:
+    - name: Check if database files exist
+      stat:
+        path: "{{ trivy_db_dir }}/db/trivy.db"
+      register: db_exists
+
+    - name: Fail if databases not downloaded
+      fail:
+        msg: "Trivy databases not found. Download them first on internet-connected system."
+      when: not db_exists.stat.exists
+
+    - name: Create tarball of databases
+      archive:
+        path:
+          - "{{ trivy_db_dir }}/db"
+          - "{{ trivy_db_dir }}/java-db"
+        dest: /tmp/trivy-db-{{ ansible_date_time.date }}.tar.gz
+        format: gz
+
+    - name: Copy databases to Trivy pod
+      shell: |
+        oc cp /tmp/trivy-db-{{ ansible_date_time.date }}.tar.gz \
+          {{ harbor_namespace }}/{{ trivy_pod_name }}:/tmp/trivy-db.tar.gz
+      register: copy_result
+
+    - name: Extract databases in Trivy pod
+      shell: |
+        oc exec -n {{ harbor_namespace }} {{ trivy_pod_name }} -- bash -c \
+          "cd /home/scanner/.cache/trivy && \
+            tar xzf /tmp/trivy-db.tar.gz && \
+            rm -f /tmp/trivy-db.tar.gz"
+      register: extract_result
+
+    - name: Verify databases
+      shell: |
+        oc exec -n {{ harbor_namespace }} {{ trivy_pod_name }} -- \
+          ls -lh /home/scanner/.cache/trivy/db/trivy.db
+      register: verify_result
+
+    - name: Display verification
+      debug:
+        msg: "{{ verify_result.stdout }}"
+
+    - name: Summary
+      debug:
+        msg:
+          - "Trivy databases updated successfully"
+          - "Date: {{ ansible_date_time.date }}"

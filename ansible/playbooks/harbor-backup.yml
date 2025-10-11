@@ -1,0 +1,50 @@
+---
+# Harbor Backup Playbook
+# Backs up Harbor configuration and database
+# Usage: ansible-playbook harbor-backup.yml
+
+- name: Backup Harbor Configuration and Data
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    backup_dir: /root/harbor-backups
+    backup_date: "{{ ansible_date_time.date }}"
+    harbor_namespace: harbor
+
+  tasks:
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}/{{ backup_date }}"
+        state: directory
+        mode: '0700'
+
+    - name: Backup Harbor PostgreSQL database
+      shell: |
+        oc exec -n {{ harbor_namespace }} harbor-database-0 -- \
+          pg_dumpall -U postgres > {{ backup_dir }}/{{ backup_date }}/harbor-db.sql
+      register: db_backup
+
+    - name: Backup Harbor configuration
+      shell: |
+        kubectl get configmap -n {{ harbor_namespace }} -o yaml \
+          > {{ backup_dir }}/{{ backup_date }}/harbor-configmaps.yaml
+        kubectl get secret -n {{ harbor_namespace }} -o yaml \
+          > {{ backup_dir }}/{{ backup_date }}/harbor-secrets.yaml
+
+    - name: Create backup archive
+      archive:
+        path: "{{ backup_dir }}/{{ backup_date }}"
+        dest: "{{ backup_dir }}/harbor-backup-{{ backup_date }}.tar.gz"
+        format: gz
+
+    - name: Remove temporary directory
+      file:
+        path: "{{ backup_dir }}/{{ backup_date }}"
+        state: absent
+
+    - name: Display backup info
+      debug:
+        msg:
+          - "Harbor backup completed"
+          - "Location: {{ backup_dir }}/harbor-backup-{{ backup_date }}.tar.gz"
