@@ -1,0 +1,59 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-scan-deploy
+  namespace: harbor
+spec:
+  params:
+  - name: git-url
+    description: Git repository URL
+    type: string
+  - name: git-revision
+    description: Git revision
+    type: string
+    default: main
+  - name: image-name
+    description: Image name (e.g., myapp)
+    type: string
+  - name: image-tag
+    description: Image tag
+    type: string
+    default: latest
+  workspaces:
+  - name: shared-workspace
+    description: Workspace for sharing data between tasks
+  tasks:
+  - name: fetch-repository
+    taskRef:
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+
+  - name: build-and-push
+    taskRef:
+      name: buildah-build
+    runAfter:
+    - fetch-repository
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)
+    - name: DOCKERFILE
+      value: ./sample-app/Dockerfile
+
+  - name: scan-image
+    taskRef:
+      name: harbor-scan
+    runAfter:
+    - build-and-push
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)

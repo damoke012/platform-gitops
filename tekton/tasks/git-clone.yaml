@@ -1,0 +1,26 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: git-clone
+  namespace: harbor
+spec:
+  params:
+  - name: url
+    description: Git repository URL
+  - name: revision
+    description: Git revision (branch/tag/commit)
+    default: main
+  workspaces:
+  - name: output
+    description: The git repo will be cloned here
+  steps:
+  - name: clone
+    image: alpine/git:latest
+    workingDir: $(workspaces.output.path)
+    script: |
+      #!/bin/sh
+      set -e
+      echo "Cloning $(params.url)"
+      git clone $(params.url) .
+      git checkout $(params.revision)
+      echo "✅ Cloned $(params.url) at $(params.revision)"

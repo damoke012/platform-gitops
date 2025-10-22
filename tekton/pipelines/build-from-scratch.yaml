@@ -1,0 +1,47 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-from-scratch
+  namespace: harbor
+spec:
+  params:
+  - name: image-name
+    type: string
+  - name: image-tag
+    type: string
+  workspaces:
+  - name: shared-workspace
+  tasks:
+  - name: prepare
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    taskSpec:
+      workspaces:
+      - name: source
+      steps:
+      - name: create-files
+        image: busybox:latest
+        script: |
+          #!/bin/sh
+          cd $(workspaces.source.path)
+          echo "FROM scratch" > Dockerfile
+          echo "Creating minimal Dockerfile..."
+          cat Dockerfile
+  - name: build
+    taskRef:
+      name: buildah-build
+    runAfter: [prepare]
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)
+  - name: scan
+    taskRef:
+      name: harbor-scan
+    runAfter: [build]
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)

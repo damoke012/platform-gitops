@@ -1,0 +1,21 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: build-scan-test-2
+  namespace: harbor
+spec:
+  pipelineRef:
+    name: build-scan-deploy
+  params:
+  - name: git-url
+    value: https://github.com/damoke012/platform-gitops.git
+  - name: git-revision
+    value: main
+  - name: image-name
+    value: sample-app
+  - name: image-tag
+    value: v1.0.0
+  workspaces:
+  - name: shared-workspace
+    persistentVolumeClaim:
+      claimName: pipeline-workspace

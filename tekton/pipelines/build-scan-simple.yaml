@@ -1,0 +1,64 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-scan-simple
+  namespace: harbor
+spec:
+  params:
+  - name: image-name
+    description: Image name
+    type: string
+  - name: image-tag
+    description: Image tag
+    type: string
+    default: latest
+  workspaces:
+  - name: shared-workspace
+  tasks:
+  - name: prepare-dockerfile
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    taskSpec:
+      workspaces:
+      - name: source
+      steps:
+      - name: create-dockerfile
+        image: registry.access.redhat.com/ubi8/ubi-minimal:latest
+        workingDir: $(workspaces.source.path)
+        script: |
+          #!/bin/bash
+          set -e
+          echo "Creating Dockerfile..."
+          cat > Dockerfile <<'DOCKERFILE'
+          FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+          RUN microdnf install -y nginx && microdnf clean all
+          RUN echo "<h1>Hello from Harbor CI/CD Pipeline</h1>" > /usr/share/nginx/html/index.html
+          EXPOSE 8080
+          CMD ["nginx", "-g", "daemon off;"]
+          DOCKERFILE
+          echo "✅ Dockerfile created"
+          cat Dockerfile
+
+  - name: build-and-push
+    taskRef:
+      name: buildah-build
+    runAfter:
+    - prepare-dockerfile
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)
+    - name: DOCKERFILE
+      value: ./Dockerfile
+
+  - name: scan-image
+    taskRef:
+      name: harbor-scan
+    runAfter:
+    - build-and-push
+    params:
+    - name: IMAGE
+      value: harbor:80/library/$(params.image-name):$(params.image-tag)

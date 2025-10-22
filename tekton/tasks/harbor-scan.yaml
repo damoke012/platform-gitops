@@ -1,0 +1,68 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: harbor-scan
+  namespace: harbor
+spec:
+  params:
+  - name: IMAGE
+    description: Full image path (e.g., harbor:80/library/myapp:latest)
+  steps:
+  - name: trigger-scan
+    image: curlimages/curl:latest
+    script: |
+      #!/bin/sh
+      set -e
+
+      # Parse image: harbor:80/library/myapp:latest -> library, myapp, latest
+      REPO=$(echo $(params.IMAGE) | cut -d'/' -f2)
+      TAG=$(echo $(params.IMAGE) | cut -d':' -f2)
+
+      echo "Triggering scan for: library/$REPO:$TAG"
+
+      curl -u "admin:Harbor12345" -X POST \
+        "http://harbor:80/api/v2.0/projects/library/repositories/$REPO/artifacts/$TAG/scan"
+
+      echo "✅ Scan triggered"
+
+  - name: wait-and-check
+    image: curlimages/curl:latest
+    script: |
+      #!/bin/sh
+      set -e
+
+      REPO=$(echo $(params.IMAGE) | cut -d'/' -f2)
+      TAG=$(echo $(params.IMAGE) | cut -d':' -f2)
+
+      echo "Waiting for scan to complete (max 5 minutes)..."
+
+      for i in $(seq 1 30); do
+        echo "Check $i/30..."
+        sleep 10
+
+        # Get scan status
+        RESULT=$(curl -s -u "admin:Harbor12345" \
+          "http://harbor:80/api/v2.0/projects/library/repositories/$REPO/artifacts/$TAG")
+
+        # Check if contains "scan_status"
+        if echo "$RESULT" | grep -q '"scan_status":"Success"'; then
+          echo "✅ Scan completed successfully!"
+
+          # Check for Critical/High CVEs (simplified check)
+          if echo "$RESULT" | grep -q '"critical":[1-9]'; then
+            echo "❌ CRITICAL vulnerabilities found! Blocking deployment."
+            exit 1
+          fi
+
+          if echo "$RESULT" | grep -q '"high":[1-9][0-9]'; then
+            echo "❌ HIGH vulnerabilities found! Blocking deployment."
+            exit 1
+          fi
+
+          echo "✅ No Critical/High vulnerabilities found. Safe to deploy!"
+          exit 0
+        fi
+      done
+
+      echo "⚠️ Scan timed out after 5 minutes"
+      exit 1

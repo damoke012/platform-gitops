@@ -1,0 +1,29 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah-build
+  namespace: harbor
+spec:
+  params:
+  - name: IMAGE
+  - name: DOCKERFILE
+    default: ./Dockerfile
+  workspaces:
+  - name: source
+  steps:
+  - name: create-docker-config
+    image: busybox:latest
+    script: |
+      #!/bin/sh
+      mkdir -p /kaniko/.docker
+      echo '{"auths":{"harbor:80":{"auth":"YWRtaW46SGFyYm9yMTIzNDU="}}}' > /kaniko/.docker/config.json
+      cat /kaniko/.docker/config.json
+  - name: build-and-push
+    image: gcr.io/kaniko-project/executor:latest
+    command: ["/kaniko/executor"]
+    args:
+    - --dockerfile=$(params.DOCKERFILE)
+    - --context=$(workspaces.source.path)
+    - --destination=$(params.IMAGE)
+    - --insecure
+    - --skip-tls-verify

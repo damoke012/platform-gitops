@@ -1,0 +1,17 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  generateName: build-scan-v3-
+  namespace: harbor
+spec:
+  pipelineRef:
+    name: build-scan-simple
+  params:
+  - name: image-name
+    value: sample-app
+  - name: image-tag
+    value: v1.0.2
+  workspaces:
+  - name: shared-workspace
+    persistentVolumeClaim:
+      claimName: pipeline-workspace

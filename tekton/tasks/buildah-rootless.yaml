@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah-build
+  namespace: harbor
+spec:
+  params:
+  - name: IMAGE
+    description: Reference of the image to build
+  - name: DOCKERFILE
+    description: Path to Dockerfile
+    default: ./Dockerfile
+  workspaces:
+  - name: source
+  steps:
+  - name: build-and-push
+    image: quay.io/buildah/stable:latest
+    workingDir: $(workspaces.source.path)
+    script: |
+      #!/usr/bin/env bash
+      set -e
+      echo "Building image: $(params.IMAGE)"
+
+      # Use vfs storage driver (works without privileged)
+      buildah --storage-driver=vfs bud \
+        --format=oci \
+        --tls-verify=false \
+        -f $(params.DOCKERFILE) \
+        -t $(params.IMAGE) \
+        .
+
+      echo "Pushing image: $(params.IMAGE)"
+      buildah --storage-driver=vfs push \
+        --tls-verify=false \
+        --creds=admin:Harbor12345 \
+        $(params.IMAGE) \
+        docker://$(params.IMAGE)
+
+      echo "✅ Image built and pushed successfully!"
+    # Remove privileged requirement - let OpenShift handle it
+    securityContext:
+      capabilities:
+        add:
+        - SETUID
+        - SETGID
