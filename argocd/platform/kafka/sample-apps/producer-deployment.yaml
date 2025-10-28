@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-producer
+  namespace: kafka
+  labels:
+    app: kafka-producer
+    app.kubernetes.io/name: kafka-producer
+    app.kubernetes.io/component: sample-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-producer
+  template:
+    metadata:
+      labels:
+        app: kafka-producer
+    spec:
+      containers:
+      - name: producer
+        image: quay.io/strimzi/kafka:0.48.0-kafka-4.0.0
+        command:
+          - /bin/bash
+          - -c
+          - |
+            set -e
+            echo "Starting Kafka producer..."
+            echo "Bootstrap servers: my-cluster-kafka-bootstrap:9092"
+            echo "Topic: test-topic"
+
+            # Wait for Kafka to be ready
+            until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server my-cluster-kafka-bootstrap:9092 > /dev/null 2>&1; do
+              echo "Waiting for Kafka cluster to be ready..."
+              sleep 5
+            done
+
+            echo "Kafka is ready. Starting to produce messages..."
+
+            # Produce messages continuously
+            i=0
+            while true; do
+              timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              message="{\"id\": $i, \"timestamp\": \"$timestamp\", \"message\": \"Test message $i from producer\", \"hostname\": \"$HOSTNAME\"}"
+              echo "$message" | /opt/kafka/bin/kafka-console-producer.sh \
+                --bootstrap-server my-cluster-kafka-bootstrap:9092 \
+                --topic test-topic \
+                --property parse.key=false
+              echo "Produced message $i at $timestamp"
+              i=$((i+1))
+              sleep 5
+            done
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 200m

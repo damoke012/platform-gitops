@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-consumer
+  namespace: kafka
+  labels:
+    app: kafka-consumer
+    app.kubernetes.io/name: kafka-consumer
+    app.kubernetes.io/component: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kafka-consumer
+  template:
+    metadata:
+      labels:
+        app: kafka-consumer
+    spec:
+      containers:
+      - name: consumer
+        image: quay.io/strimzi/kafka:0.48.0-kafka-4.0.0
+        command:
+          - /bin/bash
+          - -c
+          - |
+            set -e
+            echo "Starting Kafka consumer..."
+            echo "Bootstrap servers: my-cluster-kafka-bootstrap:9092"
+            echo "Topic: test-topic"
+            echo "Consumer group: test-consumer-group"
+            echo "Consumer instance: $HOSTNAME"
+
+            # Wait for Kafka to be ready
+            until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server my-cluster-kafka-bootstrap:9092 > /dev/null 2>&1; do
+              echo "Waiting for Kafka cluster to be ready..."
+              sleep 5
+            done
+
+            echo "Kafka is ready. Starting to consume messages..."
+
+            # Consume messages
+            /opt/kafka/bin/kafka-console-consumer.sh \
+              --bootstrap-server my-cluster-kafka-bootstrap:9092 \
+              --topic test-topic \
+              --group test-consumer-group \
+              --property print.timestamp=true \
+              --property print.key=true \
+              --property print.partition=true \
+              --from-beginning
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 200m

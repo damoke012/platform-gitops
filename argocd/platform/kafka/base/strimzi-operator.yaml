@@ -1,0 +1,25 @@
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: strimzi-kafka-operator
+  namespace: kafka
+spec:
+  targetNamespaces:
+    - kafka
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: strimzi-kafka-operator
+  namespace: kafka
+spec:
+  channel: stable
+  name: strimzi-kafka-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+  config:
+    env:
+      - name: STRIMZI_IMAGE_PULL_POLICY
+        value: IfNotPresent

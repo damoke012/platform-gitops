@@ -1,0 +1,99 @@
+## ------------------------------------------------------
+## Production Kafka Cluster (KRaft Mode - No ZooKeeper!)
+## ------------------------------------------------------
+
+## Kafka brokers configuration
+broker:
+  replicaCount: 3
+
+  heapOpts: "-Xmx1024m -Xms1024m"
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1500Mi
+    limits:
+      cpu: 1000m
+      memory: 2048Mi
+
+  persistence:
+    enabled: true
+    storageClass: "nfs-harbor"
+    size: 20Gi
+
+  # Production Kafka configuration
+  config: |
+    offsets.topic.replication.factor=3
+    transaction.state.log.replication.factor=3
+    transaction.state.log.min.isr=2
+    default.replication.factor=3
+    min.insync.replicas=2
+    auto.create.topics.enable=true
+    num.partitions=3
+
+  # Enable JMX for monitoring
+  jmx:
+    enabled: true
+
+## Controller configuration (KRaft consensus)
+controller:
+  replicaCount: 3
+
+  heapOpts: "-Xmx512m -Xms512m"
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1024Mi
+
+  persistence:
+    enabled: true
+    storageClass: "nfs-harbor"
+    size: 10Gi
+
+## Metrics configuration
+metrics:
+  kafka:
+    enabled: true
+  jmx:
+    enabled: true
+
+## Service configuration
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+
+## External access (for testing from outside cluster)
+externalAccess:
+  enabled: false
+
+## Provisioning - Auto-create topics for testing
+provisioning:
+  enabled: true
+  topics:
+    - name: test-topic
+      partitions: 3
+      replicationFactor: 3
+      config:
+        retention.ms: "604800000"  # 7 days
+    - name: transactions
+      partitions: 6
+      replicationFactor: 3
+    - name: events
+      partitions: 12
+      replicationFactor: 3
+
+## Security context for OpenShift
+containerSecurityContext:
+  enabled: true
+  runAsUser: 0
+  runAsGroup: 0
+  runAsNonRoot: false
+
+podSecurityContext:
+  enabled: true
+  fsGroup: 0
