@@ -56,3 +56,89 @@ spec:
           for: 30m
           labels: {severity: warning, tier: kafka}
           annotations: {summary: No Kafka JMX metrics, description: 'The PodMonitor is not scraping, or the metric names in kafka-metrics-configmap differ from these rules. Kafka alerts are blind.'}
+
+---
+# obs-agent's own health, in this lab's stack (user-workload Prometheus). The agent is stack-agnostic:
+# it serves /metrics in Prometheus text format, which Prometheus, Dynatrace, Datadog and others can
+# scrape. These objects are how THIS lab integrates it. They moved here from AiChohort
+# integration/obs-agent on 2026-11-08. Namespace obs-agent is not Argo-managed, hence bootstrap.
+# default-deny blocks ingress, so user-workload Prometheus must be let in, on 8080 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: uwm-scrape, namespace: obs-agent}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: obs-agent}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-user-workload-monitoring}}
+      ports: [{port: 8080, protocol: TCP}]
+---
+# Tier pods have no Service. A PodMonitor scrapes them directly; the graph is included the same way.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: obs-agent, namespace: obs-agent}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: obs-agent}}
+  podMetricsEndpoints:
+    - {port: http, path: /metrics, interval: 60s}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: {name: obs-agent, namespace: obs-agent}
+spec:
+  groups:
+    - name: obs-agent.health
+      rules:
+        - alert: ObsAgentDown
+          expr: absent(up{namespace="obs-agent", pod=~"obs-agent-l1-.*"} == 1) or absent(up{namespace="obs-agent", pod=~"obs-agent-kg-.*"} == 1)
+          for: 10m
+          labels: {severity: critical, team: obs}
+          annotations:
+            summary: obs-agent L1 or graph is not being scraped
+            description: No healthy scrape of obs-agent-l1 or obs-agent-kg for 10m. The agent is blind; no news here is not good news.
+        - alert: ObsAgentSweepStale
+          expr: time() - max(obsagent_last_sweep_timestamp{namespace="obs-agent"}) > 600
+          for: 5m
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: obs-agent has not completed a sweep in over 10 minutes
+            description: Last complete L1 sweep {{ $value | humanizeDuration }} ago. Sweeps run every 120s.
+        - alert: ObsAgentSweepErrors
+          expr: increase(obsagent_sweeps_total{namespace="obs-agent", result="error"}[15m]) > 2
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: obs-agent L1 sweeps are failing
+            description: '{{ $value | printf "%.0f" }} failed sweeps in 15m. Check obs-agent-l1 logs.'
+    - name: obs-agent.findings
+      rules:
+        # One alert per signature that produced a recommendation. The text comes from the agent's
+        # own labels; incident detail stays in the graph (dashboard), not in Teams.
+        - alert: ObsAgentRecommendation
+          expr: sum by (signature) (increase(obsagent_incidents_total{namespace="obs-agent", outcome="recommended"}[15m])) > 0
+          labels: {severity: info, team: obs}
+          annotations:
+            summary: 'obs-agent matched {{ $labels.signature }}'
+            description: '{{ $value | printf "%.0f" }} new incident(s) matched {{ $labels.signature }} in 15m. Open the obs-agent dashboard for the SOP.'
+        - alert: ObsAgentEscalationBacklog
+          expr: sum(increase(obsagent_incidents_total{namespace="obs-agent", outcome="escalated_l2"}[1h])) > 10
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: obs-agent is escalating more than it can match
+            description: '{{ $value | printf "%.0f" }} incidents escalated to L2 in the last hour with no signature match. Either the estate is unhealthy or signatures are missing.'
+    - name: obs-agent.llm
+      rules:
+        - alert: ObsAgentLLMErrors
+          # Outcomes from obsagent/llm.py. A 429 is counted as "error" together with other API
+          # errors; telling them apart needs the L2 logs, or a code change adding a rate_limited outcome.
+          expr: sum by (tier, outcome) (increase(obsagent_llm_runs_total{namespace="obs-agent", outcome=~"error|budget|refused"}[30m])) > 3
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: 'obs-agent {{ $labels.tier }} model runs ending in {{ $labels.outcome }}'
+            description: '"error" includes rate limiting (429) and API failures; "budget" means the agent hit its own token cap. Persistent errors from rate limiting are the signal to compare Bedrock or the on-prem GPU.'
+        - alert: ObsAgentTokenBudgetHigh
+          expr: sum(increase(obsagent_llm_tokens_total{namespace="obs-agent"}[24h])) > 1600000
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: obs-agent has used over 80% of its daily token cap
+            description: '{{ $value | printf "%.0f" }} tokens in 24h against LLM_DAILY_TOKEN_CAP=2000000.'
