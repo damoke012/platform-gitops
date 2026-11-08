@@ -213,14 +213,31 @@ nodes = dash("lab-nodes", "Nodes", [
     ts(6, "Network receive by node", [('sum by (instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|ovn.*|br-int|genev.*"}[5m]))', "{{instance}}")], 12, 16, unit="Bps"),
 ], "Per-node resources. Disk latency is the lab's limiting factor.", [], ["nodes"])
 
+ALERT_COLS = {"alertname": "Alert", "severity": "Severity", "namespace": "Namespace", "tier": "Tier"}
+# Labels that only say which Prometheus evaluated the rule; hidden so the alert itself is readable.
+ALERT_HIDE = ["__name__", "alertstate", "prometheus", "openshift_io_alert_source", "endpoint", "job", "service",
+              "instance", "container", "uid", "autosync_enabled", "Value"]
+
+
+def alert_table(i, title, expr, x, y, w=24, h=10, desc=""):
+    p = table(i, title, expr, x, y, w=w, h=h, desc=desc, rename=ALERT_COLS)
+    p["transformations"][0]["options"]["excludeByName"].update({k: True for k in ALERT_HIDE})
+    p["options"] = {"sortBy": [{"displayName": "Severity", "desc": False}]}
+    return p
+
+
 alerts = dash("lab-alerts", "Alerts overview", [
-    stat(1, "Critical firing", 'count(ALERTS{alertstate="firing", severity="critical"})', 0, 0, w=6, steps=[{"color": G, "value": None}, {"color": R, "value": 1}]),
-    stat(2, "Warning firing", 'count(ALERTS{alertstate="firing", severity="warning"})', 6, 0, w=6, steps=[{"color": G, "value": None}, {"color": O, "value": 1}]),
-    stat(3, "Info firing", 'count(ALERTS{alertstate="firing", severity="info"})', 12, 0, w=6),
-    stat(4, "Pending (not yet firing)", 'count(ALERTS{alertstate="pending"})', 18, 0, w=6),
-    table(5, "Firing alerts", 'ALERTS{alertstate="firing", severity!="none"}', 0, 4, w=24, h=12, rename={"alertname": "Alert", "severity": "Severity", "namespace": "Namespace", "tier": "Tier"}),
-    ts(6, "Firing alerts by severity", [('count by (severity) (ALERTS{alertstate="firing", severity!="none"})', "{{severity}}")], 0, 16, w=24, stack=True, bars=True),
-], "Everything firing across platform and lab rules, by severity.", [], ["alerts"])
+    stat(1, "Critical firing", 'count(ALERTS{alertstate="firing", severity="critical"})', 0, 0, w=5, steps=[{"color": G, "value": None}, {"color": R, "value": 1}]),
+    stat(2, "Warning firing", 'count(ALERTS{alertstate="firing", severity="warning"})', 5, 0, w=5, steps=[{"color": G, "value": None}, {"color": O, "value": 1}]),
+    stat(3, "Info firing", 'count(ALERTS{alertstate="firing", severity="info"})', 10, 0, w=5),
+    stat(4, "Pending (not yet firing)", 'count(ALERTS{alertstate="pending"})', 15, 0, w=5),
+    stat(5, "Namespaces without a dashboard", 'count(ALERTS{alertname="LabNamespaceWithoutDashboard", alertstate="firing"})', 20, 0, w=4,
+         steps=[{"color": G, "value": None}, {"color": O, "value": 1}], desc="Namespaces running pods that groups.yaml does not list. Add them and regenerate."),
+    alert_table(6, "Needs immediate attention (critical, firing)", 'ALERTS{alertstate="firing", severity="critical"}', 0, 4, h=7,
+                desc="Empty is the healthy state. Every row here is broken now or puts data at risk."),
+    alert_table(7, "All firing alerts", 'ALERTS{alertstate="firing", severity!="none"}', 0, 11, h=12),
+    ts(8, "Firing alerts by severity", [('count by (severity) (ALERTS{alertstate="firing", severity!="none"})', "{{severity}}")], 0, 23, w=24, stack=True, bars=True),
+], "Everything firing across platform and lab rules, by severity. Critical alerts are listed first, on their own.", [], ["alerts"])
 
 GPU_ = 'DCGM_FI_DEV'
 gpu = dash("gpu-p40", "GPU: Tesla P40 (ocp-w-1)", [
@@ -237,8 +254,132 @@ gpu = dash("gpu-p40", "GPU: Tesla P40 (ocp-w-1)", [
     logs(11, "GPU operator and Triton logs", '{namespace=~"nvidia-gpu-operator|forge-inference"} |= "$filter"', 0, 20),
 ], "DCGM exporter metrics, GPU pod placement, operator and inference logs.", [LEVEL], ["gpu"])
 
+# ---- One dashboard per namespace group or isolated namespace (groups.yaml) ----
+import re      # noqa: E402
+import yaml    # noqa: E402
+
+GN = 'namespace=~"$namespace"'
+CRIT = [{"color": G, "value": None}, {"color": R, "value": 1}]
+WARN = [{"color": G, "value": None}, {"color": O, "value": 1}]
+NOISE = ["__name__", "Value", "job", "service", "endpoint", "instance", "prometheus", "uid"]
+
+
+def scope_dashboard(uid, title, namespaces, desc, extra, tags):
+    """Same layout for a group and an isolated namespace; extras add panels for what runs there."""
+    single = len(namespaces) == 1
+    by = "pod" if single else "namespace"
+    podlf = "{{pod}}" if single else "{{namespace}}/{{pod}}"
+    ids = iter(range(1, 100))
+    p, y = [], 0
+    tiles = [
+        ("Critical alerts", f'count(ALERTS{{{GN}, alertstate="firing", severity="critical"}})', CRIT, "none"),
+        ("Warning alerts", f'count(ALERTS{{{GN}, alertstate="firing", severity="warning"}})', WARN, "none"),
+        ("Pods running", f'count(kube_pod_status_phase{{{GN}, phase="Running"}} == 1)', None, "none"),
+        ("Pods not ready", f'count((kube_pod_status_ready{{{GN}, condition="false"}} == 1) unless on (namespace, pod) (kube_pod_status_phase{{phase=~"Succeeded|Failed"}} == 1))', WARN, "none"),
+        ("Pods pending", f'count(kube_pod_status_phase{{{GN}, phase="Pending"}} == 1)', WARN, "none"),
+        ("Restarts (1h)", f'sum(increase(kube_pod_container_status_restarts_total{{{GN}}}[1h]))', [{"color": G, "value": None}, {"color": O, "value": 3}, {"color": R, "value": 10}], "none"),
+        ("CPU used / requested", f'sum(rate(container_cpu_usage_seconds_total{{{GN}, container!=""}}[5m])) / sum(kube_pod_container_resource_requests{{{GN}, resource="cpu"}})', None, "percentunit"),
+        ("Memory used / limit", f'sum(container_memory_working_set_bytes{{{GN}, container!=""}}) / sum(kube_pod_container_resource_limits{{{GN}, resource="memory"}})', [{"color": G, "value": None}, {"color": O, "value": 0.8}, {"color": R, "value": 0.95}], "percentunit"),
+    ]
+    for n, (t, e, steps, unit) in enumerate(tiles):
+        p.append(stat(next(ids), t, e, 3 * n, y, w=3, unit=unit, steps=steps))
+    y += 4
+    p.append(alert_table(next(ids), "Needs immediate attention (critical, firing)", f'ALERTS{{{GN}, alertstate="firing", severity="critical"}}', 0, y, w=12, h=7, desc="Empty is the healthy state."))
+    p.append(table(next(ids), "Containers not running, and why", f'kube_pod_container_status_waiting_reason{{{GN}}} == 1', 12, y, w=12, h=7,
+                   rename={"reason": "Reason", "pod": "Pod", "container": "Container", "namespace": "Namespace"},
+                   desc="CrashLoopBackOff, ImagePullBackOff, CreateContainerConfigError and the like. Empty is healthy."))
+    p[-1]["transformations"][0]["options"]["excludeByName"].update({k: True for k in NOISE})
+    y += 7
+    if not single:
+        p.append(ts(next(ids), "CPU by namespace (cores)", [(f'sum by (namespace) (rate(container_cpu_usage_seconds_total{{{GN}, container!=""}}[5m]))', "{{namespace}}")], 0, y))
+        p.append(ts(next(ids), "Memory by namespace", [(f'sum by (namespace) (container_memory_working_set_bytes{{{GN}, container!=""}})', "{{namespace}}")], 12, y, unit="bytes"))
+        y += 8
+    p.append(ts(next(ids), "CPU by pod (cores)", [(f'sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{{{GN}, container!=""}}[5m]))', podlf)], 0, y))
+    p.append(ts(next(ids), "Memory by pod", [(f'sum by (namespace, pod) (container_memory_working_set_bytes{{{GN}, container!=""}})', podlf)], 12, y, unit="bytes"))
+    y += 8
+    p.append(ts(next(ids), "Restarts by pod (per 15m)", [(f'sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{{{GN}}}[15m])) > 0', podlf)], 0, y, bars=True))
+    p.append(ts(next(ids), "CPU throttled (share of periods), pods above 5%", [(f'sum by (namespace, pod) (increase(container_cpu_cfs_throttled_periods_total{{{GN}, container!=""}}[5m])) / sum by (namespace, pod) (increase(container_cpu_cfs_periods_total{{{GN}, container!=""}}[5m])) > 0.05', podlf)], 12, y, unit="percentunit",
+                desc="Above about 25%, request latency suffers."))
+    y += 8
+    if "stateful" in extra:
+        p.append(ts(next(ids), "PVC used", [(f'kubelet_volume_stats_used_bytes{{{GN}}} / kubelet_volume_stats_capacity_bytes{{{GN}}}', "{{namespace}}/{{persistentvolumeclaim}}")], 0, y, unit="percentunit"))
+        p.append(table(next(ids), "PVCs projected full within 7 days (6h linear trend)", f'predict_linear(kubelet_volume_stats_available_bytes{{{GN}}}[6h], 7 * 86400) < 0', 12, y,
+                       rename={"persistentvolumeclaim": "PVC", "namespace": "Namespace"}, desc="Empty is healthy."))
+        p[-1]["transformations"][0]["options"]["excludeByName"].update({k: True for k in NOISE})
+        y += 8
+    else:
+        p.append(table(next(ids), "PVC usage", f'kubelet_volume_stats_used_bytes{{{GN}}} / kubelet_volume_stats_capacity_bytes{{{GN}}}', 0, y, w=24, h=6,
+                       rename={"Value": "used", "persistentvolumeclaim": "PVC"}, unit="percentunit"))
+        y += 6
+    if "jvm" in extra:
+        p.append(ts(next(ids), "JVM heap used by pod", [(f'sum by (pod) (jvm_memory_used_bytes{{{GN}, area="heap"}})', "{{pod}}")], 0, y, unit="bytes"))
+        p.append(ts(next(ids), "JVM GC time (share of wall clock) by pod", [(f'sum by (pod) (rate(jvm_gc_collection_seconds_sum{{{GN}}}[5m]))', "{{pod}}")], 12, y, unit="percentunit",
+                    desc="Above about 10% the JVM spends real time collecting instead of serving."))
+        y += 8
+    if "gpu" in extra:
+        p.append(ts(next(ids), "GPU utilisation", [("avg by (Hostname) (DCGM_FI_DEV_GPU_UTIL)", "{{Hostname}}")], 0, y, unit="percent"))
+        p.append(table(next(ids), "Pods holding a GPU", f'kube_pod_container_resource_requests{{{GN}, resource="nvidia_com_gpu"}} > 0', 12, y,
+                       rename={"pod": "Pod", "namespace": "Namespace", "node": "Node", "Value": "GPUs"}))
+        y += 8
+    p.append(ts(next(ids), "Error and warning log lines (per 5m)",
+                [(f'sum by ({by}) (count_over_time({{{GN}}} |~ "(?i)(error|fatal|panic|exception|warn)" [5m]))', f"{{{{{by}}}}}")], 0, y, w=24, bars=True, ds=L,
+                desc="Counted from Loki by a case-insensitive word match; a line saying 'no errors' counts too."))
+    y += 8
+    p.append(logs(next(ids), "Logs", f'{{{GN}}} |= "$filter"', 0, y, h=14))
+    y += 14
+    p.append(logs(next(ids), "Kubernetes events", f'{{source="k8s-events", {GN}}}', 0, y, h=8))
+    nsvar = {"name": "namespace", "label": "Namespace", "type": "custom", "query": ",".join(namespaces),
+             "multi": True, "includeAll": True, "current": {"text": "All", "value": "$__all"}, "hide": 2 if single else 0}
+    return dash(uid, title, p, desc, [nsvar, LEVEL], tags)
+
+
 here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "groups.yaml")) as f:
+    spec = yaml.safe_load(f)
+scoped, listed = [], []
+for g in spec.get("groups") or []:
+    scoped.append(scope_dashboard(f"group-{g['id']}", f"Group: {g['title']}", g["namespaces"],
+                                  f"{g['description']} Namespaces: {', '.join(g['namespaces'])}.", g.get("extra", []), ["group"]))
+    listed += g["namespaces"]
+for n in spec.get("isolated") or []:
+    scoped.append(scope_dashboard(f"ns-{n['namespace']}", f"Namespace: {n['namespace']}", [n["namespace"]],
+                                  n["description"], n.get("extra", []), ["namespace"]))
+    listed.append(n["namespace"])
+dupes = sorted({n for n in listed if listed.count(n) > 1})
+assert not dupes, f"namespaces listed twice in groups.yaml: {dupes}"
+
 for d in (namespace, pod, kafka, harbor, postgres, certs, cp, nodes, alerts, gpu):
     with open(os.path.join(here, f"{d['uid']}.json"), "w") as f:
         json.dump(d, f, indent=1)
-print("wrote", len(os.listdir(here)) - 1, "files")
+for d in scoped:   # compact: these are many and identical in shape; the ConfigMap must stay small
+    with open(os.path.join(here, f"{d['uid']}.json"), "w") as f:
+        json.dump(d, f, separators=(",", ":"))
+
+# The scoped dashboards have their own ConfigMap (grafana-dashboards-scopes, Grafana folder
+# "namespaces"). Rewrite its file list so it always matches groups.yaml.
+kpath = os.path.join(here, "..", "kustomization.yaml")
+with open(kpath) as f:
+    k = f.read()
+head = "  - name: grafana-dashboards-scopes\n    namespace: obs-grafana\n    files:\n"
+k, count = re.subn(re.escape(head) + r"(?:      - dashboards/.*\n)+", lambda _: head + "".join(f"      - dashboards/{d['uid']}.json\n" for d in scoped), k)
+assert count == 1, "grafana-dashboards-scopes block not found in kustomization.yaml"
+with open(kpath, "w") as f:
+    f.write(k)
+keep = {d["uid"] for d in scoped}
+for old in os.listdir(here):   # drop dashboards of entries removed from groups.yaml
+    if re.match(r"(group|ns)-.*\.json$", old) and old[:-5] not in keep:
+        os.remove(os.path.join(here, old))
+
+# Alert: a namespace running pods with no dashboard. Generated so it always matches groups.yaml.
+rule = {"apiVersion": "monitoring.coreos.com/v1", "kind": "PrometheusRule",
+        "metadata": {"name": "lab-dashboard-coverage", "namespace": "lab-monitoring"},
+        "spec": {"groups": [{"name": "lab.dashboards", "rules": [{
+            "alert": "LabNamespaceWithoutDashboard",
+            "expr": f'count by (namespace) (kube_pod_info{{namespace!~"openshift-.*|kube-.*|default|{"|".join(sorted(listed))}"}}) > 0',
+            "for": "30m", "labels": {"severity": "info", "tier": "workloads"},
+            "annotations": {"summary": "Namespace {{ $labels.namespace }} runs pods but has no Grafana dashboard",
+                            "description": "Add it to argocd/observability/apps/grafana/dashboards/groups.yaml (in a group, or isolated), run generate.py, and commit."}}]}]}}
+with open(os.path.join(here, "..", "..", "rules", "dashboard-coverage.yaml"), "w") as f:
+    f.write("# GENERATED by apps/grafana/dashboards/generate.py from groups.yaml. Do not edit by hand.\n")
+    yaml.safe_dump(rule, f, sort_keys=False, width=250)
+print(f"wrote 10 lab dashboards, {len(scoped)} scoped dashboards from groups.yaml, and rules/dashboard-coverage.yaml")

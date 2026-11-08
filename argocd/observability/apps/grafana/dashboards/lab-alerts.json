@@ -1,7 +1,7 @@
 {
  "uid": "lab-alerts",
  "title": "Alerts overview",
- "description": "Everything firing across platform and lab rules, by severity.",
+ "description": "Everything firing across platform and lab rules, by severity. Critical alerts are listed first, on their own.",
  "tags": [
   "lab",
   "alerts"
@@ -30,7 +30,7 @@
    "gridPos": {
     "x": 0,
     "y": 0,
-    "w": 6,
+    "w": 5,
     "h": 4
    },
    "targets": [
@@ -81,9 +81,9 @@
     "uid": "thanos"
    },
    "gridPos": {
-    "x": 6,
+    "x": 5,
     "y": 0,
-    "w": 6,
+    "w": 5,
     "h": 4
    },
    "targets": [
@@ -134,9 +134,9 @@
     "uid": "thanos"
    },
    "gridPos": {
-    "x": 12,
+    "x": 10,
     "y": 0,
-    "w": 6,
+    "w": 5,
     "h": 4
    },
    "targets": [
@@ -183,9 +183,9 @@
     "uid": "thanos"
    },
    "gridPos": {
-    "x": 18,
+    "x": 15,
     "y": 0,
-    "w": 6,
+    "w": 5,
     "h": 4
    },
    "targets": [
@@ -224,9 +224,62 @@
   },
   {
    "id": 5,
+   "type": "stat",
+   "title": "Namespaces without a dashboard",
+   "description": "Namespaces running pods that groups.yaml does not list. Add them and regenerate.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "count(ALERTS{alertname=\"LabNamespaceWithoutDashboard\", alertstate=\"firing\"})",
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "noValue": "0",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 6,
    "type": "table",
-   "title": "Firing alerts",
-   "description": "",
+   "title": "Needs immediate attention (critical, firing)",
+   "description": "Empty is the healthy state. Every row here is broken now or puts data at risk.",
    "datasource": {
     "type": "prometheus",
     "uid": "thanos"
@@ -234,6 +287,70 @@
    "gridPos": {
     "x": 0,
     "y": 4,
+    "w": 24,
+    "h": 7
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "ALERTS{alertstate=\"firing\", severity=\"critical\"}",
+     "instant": true,
+     "format": "table"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true,
+       "__name__": true,
+       "alertstate": true,
+       "prometheus": true,
+       "openshift_io_alert_source": true,
+       "endpoint": true,
+       "job": true,
+       "service": true,
+       "instance": true,
+       "container": true,
+       "uid": true,
+       "autosync_enabled": true,
+       "Value": true
+      },
+      "renameByName": {
+       "alertname": "Alert",
+       "severity": "Severity",
+       "namespace": "Namespace",
+       "tier": "Tier"
+      }
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "sortBy": [
+     {
+      "displayName": "Severity",
+      "desc": false
+     }
+    ]
+   }
+  },
+  {
+   "id": 7,
+   "type": "table",
+   "title": "All firing alerts",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 11,
     "w": 24,
     "h": 12
    },
@@ -250,7 +367,19 @@
      "id": "organize",
      "options": {
       "excludeByName": {
-       "Time": true
+       "Time": true,
+       "__name__": true,
+       "alertstate": true,
+       "prometheus": true,
+       "openshift_io_alert_source": true,
+       "endpoint": true,
+       "job": true,
+       "service": true,
+       "instance": true,
+       "container": true,
+       "uid": true,
+       "autosync_enabled": true,
+       "Value": true
       },
       "renameByName": {
        "alertname": "Alert",
@@ -264,10 +393,18 @@
    "fieldConfig": {
     "defaults": {},
     "overrides": []
+   },
+   "options": {
+    "sortBy": [
+     {
+      "displayName": "Severity",
+      "desc": false
+     }
+    ]
    }
   },
   {
-   "id": 6,
+   "id": 8,
    "type": "timeseries",
    "title": "Firing alerts by severity",
    "description": "",
@@ -277,7 +414,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 16,
+    "y": 23,
     "w": 24,
     "h": 8
    },

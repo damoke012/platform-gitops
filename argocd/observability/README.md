@@ -30,6 +30,17 @@ other namespaces and the lab-specific gaps.
 Dashboards are **templated per workload type** rather than one static dashboard per pod. There are
 409 pods, and their names change on every rollout.
 
+**Per group and per namespace** (Grafana → folder *namespaces*), from
+`apps/grafana/dashboards/groups.yaml`. Every non-OpenShift namespace is listed once, either in a
+**group** (namespaces serving one system share a dashboard, with a picker limited to the group) or
+**isolated** (its own dashboard). Each one shows critical alerts needing immediate attention, containers
+not running and why, CPU, memory, restarts, throttling, PVCs, error-log rate, logs and events.
+`extra` adds panels for what runs there: `jvm` (heap, GC), `gpu` (DCGM, GPU holders), `stateful`
+(PVC fill and 7-day full projection). `LabNamespaceWithoutDashboard` (info) fires for any namespace that
+runs pods and is not listed. To add one, edit groups.yaml, run `python3 generate.py`, and commit.
+Those dashboards are in their own ConfigMap because Argo CD's client-side apply caps an object at
+256 KB. At about 15 KB each, around 17 entries fit before the ConfigMap must be split again.
+
 ## Not covered, stated
 
 - **Harbor app metrics**: not enabled in its Helm values. Harbor gets pod, storage and log-derived signals.
@@ -69,5 +80,5 @@ Its secrets `grafana-admin` and `harbor-pull` stay out of git.
 
 ## Change a dashboard or rule
 
-Edit `apps/grafana/dashboards/generate.py` (then run it) or `apps/rules/*.yaml`, open a PR, and merge.
+Edit `apps/grafana/dashboards/generate.py` or `groups.yaml` (then run it), or `apps/rules/*.yaml`, open a PR, and merge.
 Argo CD syncs from `main`. Validate rules with `promtool check rules` before merging.
