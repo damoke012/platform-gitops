@@ -17,8 +17,9 @@ spec:
     automated:
       prune: true      # prunes only objects this Application created
       selfHeal: true
-    syncOptions:
-      - ServerSideApply=true
+    # No ServerSideApply: Argo CD's structured-merge diff has no schema for route.openshift.io Routes
+    # and fails the whole comparison ("unable to resolve parseableType ... Kind=Route"). Client-side
+    # apply suffices: the dashboards ConfigMap is ~103 KB, under the 256 KB last-applied limit.
     retry:
       limit: 10
       backoff: {duration: 30s, factor: 2, maxDuration: 10m}   # namespace RBAC from managed-by takes a moment
