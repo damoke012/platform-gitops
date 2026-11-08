@@ -1,0 +1,18 @@
+# Applied once by a cluster admin (after copying harbor-pull into lab-inference):
+#   oc create ns lab-inference; oc -n obs-agent get secret harbor-pull -o json | jq '...' | oc apply -f -
+#   oc apply -f argocd/inference/bootstrap/application.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lab-inference
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/damoke012/platform-gitops.git
+    targetRevision: main
+    path: argocd/inference/apps
+  destination: {server: https://kubernetes.default.svc}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    retry: {limit: 10, backoff: {duration: 30s, factor: 2, maxDuration: 10m}}

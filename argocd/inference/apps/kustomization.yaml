@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [llm-local.yaml]
+images:
+  - name: llama-cpp-p40
+    newName: harbor.apps.lab.ocp.lan/library/llama-cpp-p40
+    digest: sha256:78be854b544b8c11e79cfdc6cfbf496b89fe9e3e5c22c4ef66570ca747ea0232
