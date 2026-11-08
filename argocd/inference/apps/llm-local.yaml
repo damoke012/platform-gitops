@@ -1,0 +1,113 @@
+# Local LLM on the lab's Tesla P40: obs-agent's optional fallback when the Anthropic API is unavailable.
+# Written 2026-11-08 (OCP 4.19.11 home lab). Reconciled by Argo CD Application lab-inference.
+#
+# Model: Qwen2.5-7B-Instruct, Q4_K_M GGUF (Apache-2.0), pinned to Hugging Face revision bb5d59e and
+# checked against its published SHA-256 before use. Served by llama.cpp (images/llama-cpp-p40) with an
+# OpenAI-compatible API and tool calling (--jinja). No API key: only obs-agent L2/L3 can reach it
+# (NetworkPolicy), and it holds no credentials or data of its own.
+# A 7B model is far weaker than Claude: obs-agent marks its answers degraded and never escalates from them.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-inference
+  labels: {argocd.argoproj.io/managed-by: openshift-gitops}
+  annotations: {argocd.argoproj.io/sync-wave: "-10"}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: llm-models, namespace: lab-inference}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-harbor
+  resources: {requests: {storage: 12Gi}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: llm-fetch, namespace: lab-inference}
+data:
+  fetch.sh: |
+    #!/bin/sh
+    # Idempotent: downloads each file once, verifies SHA-256, records it; later starts skip verified files.
+    set -eu
+    REV=bb5d59e06d9551d752d08b292a50eb208b07ab1f
+    BASE=https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/$REV
+    while read -r f sha; do
+      [ -n "$f" ] || continue
+      if [ -f "/models/$f" ] && [ "$(cat "/models/$f.verified" 2>/dev/null)" = "$sha" ]; then echo "ok $f"; continue; fi
+      echo "fetching $f"
+      curl -fL --retry 5 -o "/models/$f.part" "$BASE/$f"
+      echo "$sha  /models/$f.part" | sha256sum -c -
+      mv "/models/$f.part" "/models/$f" && echo "$sha" > "/models/$f.verified"
+    done <<'LIST'
+    qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db
+    qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf 539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a
+    LIST
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-local
+  namespace: lab-inference
+  labels: {app.kubernetes.io/name: llm-local}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}          # one GPU: the old pod must release it first
+  selector: {matchLabels: {app.kubernetes.io/name: llm-local}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: llm-local}
+    spec:
+      imagePullSecrets: [{name: harbor-pull}]
+      nodeSelector: {nvidia.com/gpu.product: Tesla-P40}
+      tolerations: [{key: nvidia.com/gpu, operator: Equal, value: "true", effect: NoSchedule}]
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        - name: fetch
+          image: llama-cpp-p40
+          command: ["/bin/sh", "/fetch/fetch.sh"]
+          resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 256Mi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: models, mountPath: /models}, {name: fetch, mountPath: /fetch}]
+      containers:
+        - name: server
+          image: llama-cpp-p40
+          args: [-m, /models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf, --alias, qwen2.5-7b-instruct,
+                 --jinja, -ngl, "99", -c, "32768", --parallel, "1", --host, 0.0.0.0, --port, "8080", --metrics]
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /health, port: http}, periodSeconds: 10, failureThreshold: 3}
+          startupProbe: {httpGet: {path: /health, port: http}, periodSeconds: 10, failureThreshold: 60}
+          resources:
+            requests: {cpu: "2", memory: 8Gi, nvidia.com/gpu: "1"}
+            limits: {memory: 12Gi, nvidia.com/gpu: "1"}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: models, mountPath: /models, readOnly: true}, {name: tmp, mountPath: /tmp}]
+      volumes:
+        - {name: models, persistentVolumeClaim: {claimName: llm-models}}
+        - {name: fetch, configMap: {name: llm-fetch}}
+        - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: llm-local, namespace: lab-inference}
+spec:
+  selector: {app.kubernetes.io/name: llm-local}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+# Only obs-agent L2/L3 may call the model.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: llm-ingress, namespace: lab-inference}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: llm-local}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: obs-agent}}
+          podSelector: {matchExpressions: [{key: app.kubernetes.io/component, operator: In, values: [l2, l3]}]}
+      ports: [{port: 8080}]
+  egress:
+    # DNS, and HTTPS for the one-time model download (Hugging Face and its CDN; NetworkPolicy has no FQDNs).
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}}]
+      ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]
+    - ports: [{port: 443}]
