@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [x509-exporter.yaml]
+images:
+  - name: x509-certificate-exporter
+    newName: harbor.apps.lab.ocp.lan/library/x509-certificate-exporter
+    digest: sha256:85ba48a1d5970c098fb4f8ddf085219ded0c5c1c1af2b1d8444fa807afbedb6d

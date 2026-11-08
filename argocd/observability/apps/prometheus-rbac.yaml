@@ -1,0 +1,30 @@
+# The platform Prometheus (openshift-monitoring/prometheus-k8s) can scrape a cluster-monitoring
+# namespace only after it is granted read on its endpoints. One Role/RoleBinding per scraped namespace.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: prometheus-k8s-scrape, namespace: lab-certs}
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: prometheus-k8s-scrape, namespace: lab-certs}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: prometheus-k8s-scrape}
+subjects: [{kind: ServiceAccount, name: prometheus-k8s, namespace: openshift-monitoring}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: prometheus-k8s-scrape, namespace: lab-logging}
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: prometheus-k8s-scrape, namespace: lab-logging}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: prometheus-k8s-scrape}
+subjects: [{kind: ServiceAccount, name: prometheus-k8s, namespace: openshift-monitoring}]

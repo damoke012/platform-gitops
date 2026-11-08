@@ -1,0 +1,225 @@
+# x509-certificate-exporter 4.2.4 (mirrored to Harbor; passed its vulnerability policy 2026-11-08).
+# Scraped by the platform Prometheus (lab-certs carries openshift.io/cluster-monitoring).
+#
+# Two readers, both read-only:
+#   x509-secrets  Deployment. Lists and watches Secrets cluster-wide and parses their certificates.
+#                 It can read every Secret in the cluster, so it is a sensitive component. It is kept
+#                 separate from obs-agent, which must never read secrets.
+#   x509-nodes    DaemonSet on every node. Reads kubelet PKI and kubeconfigs from the host (hostPath,
+#                 read-only, runs as root to read 0600 files). Needs the hostmount-anyuid SCC,
+#                 granted once by bootstrap/scc-binding.yaml (Argo CD cannot grant SCCs).
+#   x509-controlplane  DaemonSet on masters. Static-pod kubeconfigs, where the inline cert that
+#                 broke KCM on 2026-11-07 lived.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: x509-exporter-config, namespace: lab-certs}
+data:
+  config.yaml: |
+    # Without exposeNotBefore the lifetime-ratio alerts cannot be computed (checked on the image).
+    metrics:
+      exposeRelative: true
+      exposeNotBefore: true
+      exposeExpired: true
+      exposePerCertError: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: x509-secrets, namespace: lab-certs}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lab-x509-secrets-read}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lab-x509-secrets-read}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lab-x509-secrets-read}
+subjects: [{kind: ServiceAccount, name: x509-secrets, namespace: lab-certs}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: x509-secrets
+  namespace: lab-certs
+  labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: secrets}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: secrets}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: secrets}
+    spec:
+      serviceAccountName: x509-secrets
+      imagePullSecrets: [{name: harbor-pull}]
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: exporter
+          image: x509-certificate-exporter
+          args: [--config=/config/config.yaml, --watch-kube-secrets, --listen-address=:9793]
+          ports: [{name: metrics, containerPort: 9793}]
+          readinessProbe: {httpGet: {path: /readyz, port: metrics}, periodSeconds: 15}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: config, mountPath: /config, readOnly: true}]
+      volumes: [{name: config, configMap: {name: x509-exporter-config}}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: x509-nodes, namespace: lab-certs}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: x509-nodes
+  namespace: lab-certs
+  labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: nodes}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: nodes}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: nodes}
+    spec:
+      serviceAccountName: x509-nodes
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: harbor-pull}]
+      tolerations: [{operator: Exists}]
+      securityContext: {runAsUser: 0, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: exporter
+          image: x509-certificate-exporter
+          args:
+            - --config=/config/config.yaml
+            - --listen-address=:9793
+            # Exact files, not the directory: pki/ keeps rotated-out kubelet-client-<date>.pem
+            # files that are expired by design, and would trip CertificateExpired.
+            - --watch-file=/host/var/lib/kubelet/pki/kubelet-client-current.pem
+            - --watch-file=/host/var/lib/kubelet/pki/kubelet-server-current.pem
+            - --watch-kubeconf=/host/var/lib/kubelet/kubeconfig
+            - --watch-kubeconf=/host/etc/kubernetes/kubeconfig
+          ports: [{name: metrics, containerPort: 9793}]
+          readinessProbe: {httpGet: {path: /readyz, port: metrics}, periodSeconds: 15}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: kubelet-pki, mountPath: /host/var/lib/kubelet/pki, readOnly: true}
+            - {name: kubelet-kubeconfig, mountPath: /host/var/lib/kubelet/kubeconfig, readOnly: true}
+            - {name: etc-kubeconfig, mountPath: /host/etc/kubernetes/kubeconfig, readOnly: true}
+      volumes:
+        - {name: config, configMap: {name: x509-exporter-config}}
+        - {name: kubelet-pki, hostPath: {path: /var/lib/kubelet/pki, type: Directory}}
+        - {name: kubelet-kubeconfig, hostPath: {path: /var/lib/kubelet/kubeconfig, type: File}}
+        - {name: etc-kubeconfig, hostPath: {path: /etc/kubernetes/kubeconfig, type: File}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: x509-controlplane
+  namespace: lab-certs
+  labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: controlplane}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: controlplane}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: x509-exporter, app.kubernetes.io/component: controlplane}
+    spec:
+      serviceAccountName: x509-nodes
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: harbor-pull}]
+      nodeSelector: {node-role.kubernetes.io/master: ""}
+      tolerations: [{operator: Exists}]
+      securityContext: {runAsUser: 0, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: exporter
+          image: x509-certificate-exporter
+          # The on-disk copies the static pods actually load. They can lag the Secrets when a
+          # revision rollout is stuck, which is what happened on 2026-11-07. Exact tls.crt files: a
+          # directory would include tls.key, which the exporter counts as a read error. Paths
+          # checked on ocp-cp-2 on 2026-11-08. etcd certs are covered by their Secrets
+          # (x509-secrets).
+          args:
+            - --config=/config/config.yaml
+            - --listen-address=:9793
+            - --watch-file=/host/srv/kube-controller-manager-certs/secrets/kube-controller-manager-client-cert-key/tls.crt
+            - --watch-file=/host/srv/kube-controller-manager-certs/secrets/csr-signer/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/kube-scheduler-client-cert-key/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/kubelet-client/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/aggregator-client/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/localhost-serving-cert-certkey/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/service-network-serving-certkey/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/external-loadbalancer-serving-certkey/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/internal-loadbalancer-serving-certkey/tls.crt
+            - --watch-file=/host/srv/kube-apiserver-certs/secrets/check-endpoints-client-cert-key/tls.crt
+          ports: [{name: metrics, containerPort: 9793}]
+          readinessProbe: {httpGet: {path: /readyz, port: metrics}, periodSeconds: 15}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: static-pod-resources, mountPath: /host/srv, readOnly: true}
+      volumes:
+        - {name: config, configMap: {name: x509-exporter-config}}
+        - {name: static-pod-resources, hostPath: {path: /etc/kubernetes/static-pod-resources, type: Directory}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: x509-exporter
+  namespace: lab-certs
+  labels: {app.kubernetes.io/name: x509-exporter}
+spec:
+  clusterIP: None   # headless: one endpoint per pod, so each node's DaemonSet pod is its own target
+  selector: {app.kubernetes.io/name: x509-exporter}
+  ports: [{name: metrics, port: 9793, targetPort: metrics}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: x509-exporter, namespace: lab-certs}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: x509-exporter}}
+  endpoints:
+    - port: metrics
+      interval: 120s
+      relabelings:
+        - {sourceLabels: [__meta_kubernetes_pod_node_name], targetLabel: node}
+        - {sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_component], targetLabel: reader}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: lab-certs}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress]}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: x509-allow, namespace: lab-certs}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: x509-exporter}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-monitoring}}}]
+      ports: [{port: 9793, protocol: TCP}]
+  egress:
+    # Only x509-secrets uses these (API watch); the host readers make no connections.
+    - to:
+        - {ipBlock: {cidr: 192.168.22.201/32}}
+        - {ipBlock: {cidr: 192.168.22.202/32}}
+        - {ipBlock: {cidr: 192.168.22.203/32}}
+      ports: [{port: 6443, protocol: TCP}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+          podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+      ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]

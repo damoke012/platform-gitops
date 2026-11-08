@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [loki.yaml, alloy.yaml]
+images:
+  - name: loki
+    newName: harbor.apps.lab.ocp.lan/library/loki
+    digest: sha256:a06b7df762ba44ddbc0de80f7f54b5baf3018df3749736350a4319c371c7e499
+  - name: alloy
+    newName: harbor.apps.lab.ocp.lan/library/alloy
+    digest: sha256:b653d8b319891ba977e10eb07a76345a527a24f891171ae8d8045aae700121eb

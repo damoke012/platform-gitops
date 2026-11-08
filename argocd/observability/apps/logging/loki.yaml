@@ -1,0 +1,123 @@
+# Loki 3.7.9, single binary, filesystem storage on nfs-harbor. Written 2026-11-08.
+# Sized for a fragile lab: the only storage is NFS on ocp-svc, on the same single spinning datastore
+# whose 7-8 s etcd fsync caused two outages. So: 72 h retention, low ingestion limits, app namespaces
+# only (see alloy.yaml). Raise the limits only once etcd fsync is healthy.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: loki-config, namespace: lab-logging}
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+      log_level: warn
+    common:
+      path_prefix: /loki
+      replication_factor: 1
+      ring: {kvstore: {store: inmemory}}
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+    schema_config:
+      configs:
+        - from: "2026-11-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index: {prefix: index_, period: 24h}
+    limits_config:
+      retention_period: 72h
+      ingestion_rate_mb: 2
+      ingestion_burst_size_mb: 4
+      max_global_streams_per_user: 3000
+      reject_old_samples: true
+      reject_old_samples_max_age: 24h
+      allow_structured_metadata: true
+      volume_enabled: true
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+      compaction_interval: 30m
+    ingester:
+      chunk_idle_period: 30m
+      max_chunk_age: 2h
+    analytics: {reporting_enabled: false}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: loki, namespace: lab-logging}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki
+  namespace: lab-logging
+  labels: {app.kubernetes.io/name: loki}
+spec:
+  serviceName: loki-headless
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: loki}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: loki}
+      annotations: {config-hash: "v1"}   # bump to roll the pod after a config change
+    spec:
+      serviceAccountName: loki
+      imagePullSecrets: [{name: harbor-pull}]
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: loki
+          image: loki
+          args: [-config.file=/etc/loki/loki.yaml, -target=all]
+          ports:
+            - {name: http, containerPort: 3100}
+            - {name: grpc, containerPort: 9095}
+          readinessProbe: {httpGet: {path: /ready, port: http}, periodSeconds: 15, initialDelaySeconds: 20}
+          livenessProbe: {httpGet: {path: /ready, port: http}, periodSeconds: 30, initialDelaySeconds: 120, failureThreshold: 6}
+          resources:
+            requests: {cpu: 100m, memory: 384Mi}
+            limits: {memory: 1Gi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki, readOnly: true}
+            - {name: data, mountPath: /loki}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: config, configMap: {name: loki-config}}
+        - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: nfs-harbor
+        resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: lab-logging
+  labels: {app.kubernetes.io/name: loki}
+spec:
+  selector: {app.kubernetes.io/name: loki}
+  ports: [{name: http, port: 3100, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: loki-headless, namespace: lab-logging}
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: loki}
+  ports: [{name: http, port: 3100, targetPort: http}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: loki, namespace: lab-logging}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: loki}}
+  endpoints: [{port: http, path: /metrics, interval: 60s}]
