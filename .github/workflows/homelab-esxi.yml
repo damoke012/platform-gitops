@@ -1,0 +1,99 @@
+# Home-lab control-plane VMs (ESXi 192.168.1.144) as code.
+#
+#   push to main touching infra/esxi/**  -> plan, gate, apply (rolling, one node at a time)
+#   workflow_dispatch                    -> plan only, unless mode=apply on main
+#
+# Runs on a self-hosted runner on ocp-svc: GitHub-hosted runners cannot reach 192.168.1.0/24.
+# No GitHub secrets: ESXI_PASSWORD_FILE, KUBECONFIG and TF_STATE_PATH come from the runner's .env.
+# There is deliberately no pull_request trigger: this repo is public, and a PR-triggered job on a
+# self-hosted runner executes fork code inside the lab. See infra/esxi/README.md.
+name: homelab-esxi
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/esxi/**"
+      - ".github/workflows/homelab-esxi.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan = no changes; apply only takes effect on main"
+        type: choice
+        options: [plan, apply]
+        default: plan
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homelab-esxi
+  cancel-in-progress: false
+
+jobs:
+  esxi:
+    runs-on: [self-hosted, linux, homelab-ocp-svc]
+    environment: homelab
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: infra/esxi
+    env:
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      MODE: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'apply') && 'apply' || 'plan' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Runner preconditions
+        run: |
+          for v in ESXI_PASSWORD_FILE KUBECONFIG TF_STATE_PATH; do
+            [ -n "${!v:-}" ] || { echo "::error::$v not set in runner .env"; exit 1; }
+          done
+          test -r "$ESXI_PASSWORD_FILE" && test -r "$KUBECONFIG"
+          echo "::add-mask::$(cat "$ESXI_PASSWORD_FILE")"
+          for b in oc jq sshpass python3; do command -v "$b" >/dev/null || { echo "::error::missing $b"; exit 1; }; done
+          echo "mode=$MODE ref=$GITHUB_REF event=$GITHUB_EVENT_NAME"
+
+      - name: Gate unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: fmt / init / validate
+        run: |
+          terraform fmt -check -recursive
+          scripts/tf.sh init -input=false -backend-config="path=$TF_STATE_PATH"
+          scripts/tf.sh validate
+
+      - name: Plan
+        run: |
+          scripts/tf.sh plan -input=false -lock-timeout=5m -out=tfplan
+          scripts/tf.sh show -json tfplan > plan.json
+          { echo '### Plan'; echo '```'; scripts/tf.sh show -no-color tfplan; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Gate
+        run: |
+          python3 scripts/plan_gate.py plan.json | tee gate.json
+          { echo '### Gate'; echo '```json'; cat gate.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply
+        if: env.MODE == 'apply'
+        run: |
+          imports=$(jq '.imports | length' gate.json)
+          disruptive=$(jq '.disruptive | length' gate.json)
+          if [ "$disruptive" -gt 0 ]; then
+            scripts/rolling-apply.sh gate.json
+          elif [ "$imports" -gt 0 ]; then
+            # Pure import: no VM is touched.
+            scripts/tf.sh apply -input=false -lock-timeout=5m tfplan
+          else
+            echo "No changes."
+          fi
+
+      - name: Remove plan files from the persistent runner workspace
+        if: always()
+        run: rm -f tfplan plan.json gate.json node-*.tfplan node-*.json
