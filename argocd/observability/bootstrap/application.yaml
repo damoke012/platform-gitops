@@ -1,0 +1,24 @@
+# Applied once by a cluster admin: oc apply -f argocd/observability/bootstrap/
+# From then on Argo CD (openshift-gitops) reconciles argocd/observability/apps from main.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lab-observability
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/damoke012/platform-gitops.git
+    targetRevision: main
+    path: argocd/observability/apps
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true      # prunes only objects this Application created
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff: {duration: 30s, factor: 2, maxDuration: 10m}   # namespace RBAC from managed-by takes a moment

@@ -1,0 +1,170 @@
+# Grafana 12.4.3 for the home lab, owned by Argo CD (lab-observability). Moved here from AiChohort
+# integration/obs-agent/deploy/openshift-addons/grafana on 2026-11-08, where it was applied first.
+#
+# Grafana in its own namespace, reading OpenShift's Thanos querier (platform + user-workload
+# metrics) with a read-only cluster-monitoring-view token. Data stays in the lab.
+# Not in git, created once (bootstrap/README.md): secrets obs-grafana/grafana-admin and obs-grafana/harbor-pull.
+#   - image mirrored into Harbor and pinned by digest in kustomization.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: grafana, namespace: obs-grafana}
+---
+# Long-lived token: Grafana reads datasource credentials once, at provisioning.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-thanos-token
+  namespace: obs-grafana
+  annotations: {kubernetes.io/service-account.name: grafana}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: obs-grafana-monitoring-view}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-monitoring-view}
+subjects: [{kind: ServiceAccount, name: grafana, namespace: obs-grafana}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: grafana-provisioning, namespace: obs-grafana}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Thanos
+        uid: thanos
+        type: prometheus
+        access: proxy
+        isDefault: true
+        url: https://thanos-querier.openshift-monitoring.svc:9091
+        jsonData:
+          httpHeaderName1: Authorization
+          tlsAuthWithCACert: true
+          timeInterval: 60s
+        secureJsonData:
+          httpHeaderValue1: "Bearer $__file{/var/run/grafana-token/token}"
+          tlsCACert: "$__file{/etc/service-ca/service-ca.crt}"
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.lab-logging.svc:3100
+        jsonData: {maxLines: 2000, timeout: 60}
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: obs
+        folder: lab
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options: {path: /var/lib/grafana-dashboards}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: obs-grafana
+  labels: {app.kubernetes.io/name: grafana}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: grafana}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: grafana}
+    spec:
+      serviceAccountName: grafana
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: harbor-pull}]
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: grafana
+          image: grafana
+          ports: [{name: http, containerPort: 3000}]
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: {secretKeyRef: {name: grafana-admin, key: admin-user}}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: grafana-admin, key: admin-password}}
+            - {name: GF_PATHS_DATA, value: /var/lib/grafana}
+            - {name: GF_PATHS_PROVISIONING, value: /etc/grafana/provisioning}
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "false"}
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: "false"}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES, value: "false"}
+            - {name: GF_NEWS_NEWS_FEED_ENABLED, value: "false"}
+          readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 30, initialDelaySeconds: 30}
+          resources:
+            requests: {cpu: 50m, memory: 192Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/grafana}
+            - {name: tmp, mountPath: /tmp}
+            - {name: provisioning, mountPath: /etc/grafana/provisioning/datasources/datasources.yaml, subPath: datasources.yaml}
+            - {name: provisioning, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml, subPath: dashboards.yaml}
+            - {name: dashboards, mountPath: /var/lib/grafana-dashboards}
+            - {name: token, mountPath: /var/run/grafana-token, readOnly: true}
+            - {name: service-ca, mountPath: /etc/service-ca, readOnly: true}
+      volumes:
+        - {name: data, emptyDir: {sizeLimit: 512Mi}}   # dashboards are provisioned; nothing to keep
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        - {name: provisioning, configMap: {name: grafana-provisioning}}
+        - {name: dashboards, configMap: {name: grafana-dashboards}}
+        - {name: token, secret: {secretName: grafana-thanos-token, items: [{key: token, path: token}]}}
+        # Injected into every namespace by the service-ca operator.
+        - {name: service-ca, configMap: {name: openshift-service-ca.crt, items: [{key: service-ca.crt, path: service-ca.crt}]}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: grafana, namespace: obs-grafana}
+spec:
+  selector: {app.kubernetes.io/name: grafana}
+  ports: [{name: http, port: 3000, targetPort: http}]
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata: {name: grafana, namespace: obs-grafana}
+spec:
+  to: {kind: Service, name: grafana}
+  port: {targetPort: http}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: obs-grafana}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: grafana-allow, namespace: obs-grafana}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {network.openshift.io/policy-group: ingress}}
+      ports: [{port: 3000, protocol: TCP}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-monitoring}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: thanos-query}}
+      ports: [{port: 9091, protocol: TCP}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: lab-logging}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: loki}}
+      ports: [{port: 3100, protocol: TCP}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+          podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+      ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]

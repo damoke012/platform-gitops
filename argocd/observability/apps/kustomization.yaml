@@ -1,0 +1,14 @@
+# Lab observability, reconciled by Argo CD Application lab-observability (bootstrap/application.yaml).
+# Written 2026-11-08 for the OCP 4.19.11 home lab. Images are mirrored into Harbor and pinned by
+# digest; each passed Harbor's vulnerability policy before being pinned.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - prometheus-rbac.yaml
+  - rules/certificates.yaml
+  - rules/workloads.yaml
+  - rules/platform.yaml
+  - x509
+  - logging
+  - grafana

@@ -1,0 +1,493 @@
+{
+ "uid": "obs-agent",
+ "title": "obs-agent: L1 triage",
+ "description": "obs-agent L1 health and findings. Incident detail and SOPs live in the agent's own dashboard (svc/obs-agent-kg).",
+ "tags": [
+  "obs-agent",
+  "homelab"
+ ],
+ "timezone": "utc",
+ "schemaVersion": 39,
+ "refresh": "1m",
+ "time": {
+  "from": "now-24h",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Agent up (l1 + kg)",
+   "description": "Healthy scrapes of obs-agent-l1 and obs-agent-kg. 2 = both.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "count(up{namespace=\"obs-agent\", pod=~\"obs-agent-(l1|kg)-.*\"} == 1)",
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "noValue": "no data",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       },
+       {
+        "color": "green",
+        "value": 2
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Seconds since last sweep",
+   "description": "Sweeps run every 120 s. Over 600 s fires ObsAgentSweepStale.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "time() - max(obsagent_last_sweep_timestamp{namespace=\"obs-agent\"})",
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "noValue": "no data",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 300
+       },
+       {
+        "color": "red",
+        "value": 600
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Unhealthy objects (last sweep)",
+   "description": "Objects L1 found unhealthy in its last sweep.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(obsagent_observations{namespace=\"obs-agent\"})",
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "none",
+    "graphMode": "none",
+    "textMode": "value"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "noValue": "no data",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Tokens used, 24h (cap 2M)",
+   "description": "LLM_DAILY_TOKEN_CAP=2000000. 0 while L2/L3 are off.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(obsagent_llm_tokens_total{namespace=\"obs-agent\"}[24h])) or vector(0)",
+     "instant": true
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "noValue": "no data",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1600000
+       },
+       {
+        "color": "red",
+        "value": 2000000
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "New incidents by L1 outcome (per 15m)",
+   "description": "recommended = matched a signature with an SOP. escalated_l2 = no confident match; goes to L2 when L2 is on.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (outcome) (increase(obsagent_incidents_total{namespace=\"obs-agent\"}[15m]))",
+     "legendFormat": "{{outcome}}"
+    }
+   ],
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 60,
+      "drawStyle": "bars",
+      "stacking": {
+       "mode": "normal"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 6,
+   "type": "table",
+   "title": "Signature matches, last 24h",
+   "description": "Which signatures fire. A signature that never fires and one that fires constantly both need review.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sort_desc(sum by (signature) (increase(obsagent_incidents_total{namespace=\"obs-agent\", signature!=\"none\"}[24h])) > 0)",
+     "instant": true,
+     "format": "table"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true
+      },
+      "renameByName": {
+       "Value": "matches (24h)",
+       "signature": "Signature"
+      }
+     }
+    }
+   ],
+   "options": {
+    "sortBy": [
+     {
+      "displayName": "matches (24h)",
+      "desc": true
+     }
+    ]
+   }
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Sweeps by result (per 15m)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (result) (increase(obsagent_sweeps_total{namespace=\"obs-agent\"}[15m]))",
+     "legendFormat": "{{result}}"
+    }
+   ],
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 60,
+      "drawStyle": "bars",
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Model runs by tier and outcome (per 1h)",
+   "description": "\"error\" includes rate limiting (429). \"budget\" = the agent stopped itself at its token cap.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (tier, outcome) (increase(obsagent_llm_runs_total{namespace=\"obs-agent\"}[1h]))",
+     "legendFormat": "{{tier}} {{outcome}}"
+    }
+   ],
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 60,
+      "drawStyle": "bars",
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Tokens by tier (per 1h)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "thanos"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (tier) (increase(obsagent_llm_tokens_total{namespace=\"obs-agent\"}[1h]))",
+     "legendFormat": "{{tier}}"
+    }
+   ],
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "drawStyle": "line",
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   }
+  }
+ ],
+ "editable": true
+}

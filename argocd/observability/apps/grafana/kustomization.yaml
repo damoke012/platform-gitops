@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [grafana.yaml]
+configMapGenerator:
+  - name: grafana-dashboards
+    namespace: obs-grafana
+    files:
+      - dashboards/obs-agent.json
+      - dashboards/gpu-p40.json
+      - dashboards/lab-namespace.json
+      - dashboards/lab-pod.json
+      - dashboards/lab-kafka.json
+      - dashboards/lab-harbor.json
+      - dashboards/lab-postgres.json
+      - dashboards/lab-certs.json
+      - dashboards/lab-controlplane.json
+      - dashboards/lab-nodes.json
+      - dashboards/lab-alerts.json
+images:
+  - name: grafana
+    newName: harbor.apps.lab.ocp.lan/library/grafana-oss
+    digest: sha256:a4d81f4adedb72b85e6501d354569f13b4318cd0e7115d1f18485a5e12ace577

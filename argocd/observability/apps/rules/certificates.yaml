@@ -1,0 +1,102 @@
+# Certificate expiry, all sources. Evaluated by the platform Prometheus (namespace lab-monitoring).
+#
+# Why "remaining time AND remaining fraction": OpenShift's internal certs are mostly 30-day certs
+# that rotate at about 80% of lifetime. A plain "< 14 days" rule fires every month on certs that are
+# healthy. These rules fire only once a cert is past its normal rotation point, i.e. rotation failed.
+# That is what happened on 2026-11-07, when the lab came back from 4 weeks off. Long-lived certs
+# (1y+) are caught by the absolute caps.
+#
+# Tiers (label severity, plus tier for routing/digests):
+#   info      remaining < 30d and < 18% of lifetime   should rotate soon; watch it
+#   warning   remaining < 14d and < 12% of lifetime   rotation is overdue
+#   critical  remaining < 3d  and <  8% of lifetime   act today
+#   critical  expired, or a cert-bearing component reports a TTL under a day
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: {name: lab-certificates, namespace: lab-monitoring}
+spec:
+  groups:
+    - name: lab.certificates.x509
+      rules:
+        - record: lab:x509_cert_remaining_seconds
+          expr: x509_cert_not_after - time()
+        - record: lab:x509_cert_remaining_ratio
+          expr: (x509_cert_not_after - time()) / clamp_min(x509_cert_not_after - x509_cert_not_before, 1)
+        - alert: CertificateExpiringSoon
+          expr: lab:x509_cert_remaining_seconds < 30*86400 and lab:x509_cert_remaining_ratio < 0.18 and lab:x509_cert_remaining_seconds >= 14*86400
+          for: 1h
+          labels: {severity: info, tier: certs}
+          annotations:
+            summary: 'Certificate {{ $labels.subject_CN }} expires in {{ $value | humanizeDuration }}'
+            description: 'Source {{ with $labels.secret_name }}secret {{ $labels.secret_namespace }}/{{ . }}{{ else }}file {{ $labels.filepath }} on {{ $labels.instance }}{{ end }}. Past its normal rotation point; watch it.'
+        - alert: CertificateRotationOverdue
+          expr: lab:x509_cert_remaining_seconds < 14*86400 and lab:x509_cert_remaining_ratio < 0.12 and lab:x509_cert_remaining_seconds >= 3*86400
+          for: 30m
+          labels: {severity: warning, tier: certs}
+          annotations:
+            summary: 'Certificate {{ $labels.subject_CN }} rotation overdue: {{ $value | humanizeDuration }} left'
+            description: 'Source {{ with $labels.secret_name }}secret {{ $labels.secret_namespace }}/{{ . }}{{ else }}file {{ $labels.filepath }} on {{ $labels.instance }}{{ end }}. Under 12% of lifetime remains; the owner of this cert should have rotated it.'
+        - alert: CertificateExpiryImminent
+          expr: lab:x509_cert_remaining_seconds < 3*86400 and lab:x509_cert_remaining_ratio < 0.08 and lab:x509_cert_remaining_seconds > 0
+          for: 10m
+          labels: {severity: critical, tier: certs}
+          annotations:
+            summary: 'Certificate {{ $labels.subject_CN }} expires in {{ $value | humanizeDuration }}'
+            description: 'Source {{ with $labels.secret_name }}secret {{ $labels.secret_namespace }}/{{ . }}{{ else }}file {{ $labels.filepath }} on {{ $labels.instance }}{{ end }}. Act today. For OpenShift internal certs see platform recovery notes (AiChohort HOMELAB-RECOVERY.md).'
+        - alert: CertificateExpired
+          expr: x509_cert_expired == 1
+          for: 5m
+          labels: {severity: critical, tier: certs}
+          annotations:
+            summary: 'Certificate {{ $labels.subject_CN }} has EXPIRED'
+            description: 'Source {{ with $labels.secret_name }}secret {{ $labels.secret_namespace }}/{{ . }}{{ else }}file {{ $labels.filepath }} on {{ $labels.instance }}{{ end }}. Anything still presenting it will fail TLS.'
+        - alert: CertificateExporterReadErrors
+          # Metric names checked against the 4.2.4 image on 2026-11-08 (v4 dropped x509_read_errors).
+          expr: sum by (instance) (increase(x509_source_errors_total{namespace="lab-certs"}[30m])) > 0 or sum by (instance) (x509_cert_error{namespace="lab-certs"}) > 0
+          for: 30m
+          labels: {severity: warning, tier: certs}
+          annotations:
+            summary: 'x509 exporter on {{ $labels.instance }} cannot read some certificates'
+            description: Unread certificates are unmonitored certificates. Check the x509-certificate-exporter logs in lab-certs.
+        # The 14-day KCM client cert issued by hand on 2026-11-07 (bridge for OCPBUGS-63342, expires
+        # 2026-11-21). With a 14-day lifetime the ratio rules would warn only about 1.7 days out, so it
+        # gets explicit thresholds. Delete this rule once the operator has reissued the cert or the
+        # cluster runs a 4.19.z that contains the fix.
+        - alert: KCMBridgeCertificateExpiring
+          expr: (x509_cert_not_after{subject_CN="system:kube-controller-manager"} - time()) < 7*86400 and (x509_cert_not_after{subject_CN="system:kube-controller-manager"} - x509_cert_not_before{subject_CN="system:kube-controller-manager"}) < 15*86400
+          labels: {severity: warning, tier: certs}
+          annotations:
+            summary: 'Hand-signed KCM client cert expires in {{ $value | humanizeDuration }}'
+            description: 'Bridge cert from the 2026-11-07 recovery. If the operator has not reissued kube-controller-manager-client-cert-key by now, KCM loses API access when it expires and CSR signing stops.'
+        - alert: KCMBridgeCertificateCritical
+          expr: (x509_cert_not_after{subject_CN="system:kube-controller-manager"} - time()) < 2*86400 and (x509_cert_not_after{subject_CN="system:kube-controller-manager"} - x509_cert_not_before{subject_CN="system:kube-controller-manager"}) < 15*86400
+          labels: {severity: critical, tier: certs}
+          annotations:
+            summary: 'Hand-signed KCM client cert expires in {{ $value | humanizeDuration }}'
+            description: Renew now (HOMELAB-RECOVERY.md step 1) or confirm the operator has reissued it.
+        - alert: CertificateExporterDown
+          expr: absent(up{namespace="lab-certs", job=~".*x509.*"} == 1)
+          for: 15m
+          labels: {severity: warning, tier: certs}
+          annotations:
+            summary: x509 certificate exporter is not being scraped
+            description: Certificate expiry alerts for TLS secrets and on-disk certs are blind while this fires.
+    - name: lab.certificates.kubelet
+      rules:
+        # Kubelet client and serving certs: about 30 days, rotated by the kubelet. A serving cert also
+        # needs its CSR approved, and nothing approves those automatically on this UPI cluster.
+        - alert: KubeletCertificateRotationOverdue
+          expr: min by (node) (kubelet_certificate_manager_client_ttl_seconds) < 5*86400 or min by (node) (kubelet_certificate_manager_server_ttl_seconds) < 5*86400
+          for: 30m
+          labels: {severity: warning, tier: certs}
+          annotations:
+            summary: 'Kubelet certificate on {{ $labels.node }} has under 5 days left'
+            description: 'Normal rotation leaves more than this. For the serving cert, check for pending kubelet-serving CSRs (oc get csr): this cluster has no automatic serving-CSR approver.'
+        - alert: KubeletCertificateExpiryImminent
+          expr: min by (node) (kubelet_certificate_manager_client_ttl_seconds) < 86400 or min by (node) (kubelet_certificate_manager_server_ttl_seconds) < 86400
+          for: 5m
+          labels: {severity: critical, tier: certs}
+          annotations:
+            summary: 'Kubelet certificate on {{ $labels.node }} expires within a day'
+            description: 'Once expired, the node cannot reach the API (client cert), or logs, exec and port-forward break (serving cert). Recovery order is in AiChohort HOMELAB-RECOVERY.md.'

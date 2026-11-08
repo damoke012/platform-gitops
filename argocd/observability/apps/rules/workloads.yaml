@@ -1,0 +1,121 @@
+# Workload health for every namespace OpenShift's own rules leave out. Platform rules
+# (KubePodCrashLooping, KubeDeploymentReplicasMismatch, ...) only match
+# namespace=~"(openshift-.*|kube-.*|default)". Evaluated by the platform Prometheus.
+#
+# Severity: info = look when convenient; warning = needs attention today; critical = broken now or
+# data at risk. Namespaces holding state (lab-*, harbor, kafka, egodeapp) escalate faster.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: {name: lab-workloads, namespace: lab-monitoring}
+spec:
+  groups:
+    - name: lab.workloads.pods
+      rules:
+        - alert: LabPodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace!~"openshift-.*|kube-.*|default"}[15m]) >= 3
+          for: 5m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is restarting repeatedly'
+            description: '{{ $value | printf "%.0f" }} restarts in 15m. Check the pod logs in Grafana (Pod detail dashboard).'
+        - alert: LabStatefulPodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"lab-.*|harbor|kafka|egodeapp|obs-agent"}[15m]) >= 3
+          for: 20m
+          labels: {severity: critical, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} has been crash-looping for 20m'
+            description: A stateful or platform-supporting workload is down. Data paths (registry, broker, database, logs) may be failing.
+        - alert: LabContainerOOMKilled
+          expr: (kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace!~"openshift-.*|kube-.*|default"} == 1) and on (namespace, pod, container) (increase(kube_pod_container_status_restarts_total[30m]) > 0)
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) was OOMKilled'
+            description: The container hit its memory limit. Raise the limit or find the leak; requests should match real use.
+        - alert: LabPodNotReady
+          expr: sum by (namespace, pod) (kube_pod_status_ready{condition="false", namespace!~"openshift-.*|kube-.*|default"}) > 0 unless on (namespace, pod) (kube_pod_status_phase{phase=~"Succeeded|Failed"} == 1)
+          for: 15m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} not ready for 15m'
+            description: Readiness probe failing or containers not started.
+        - alert: LabPodPendingLong
+          expr: sum by (namespace, pod) (kube_pod_status_phase{phase="Pending", namespace!~"openshift-.*|kube-.*|default"}) > 0
+          for: 30m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} Pending for over 30m'
+            description: 'Unschedulable (taints, resources, GPU) or volume not bound. A Pending pod raises no event once it gives up; this alert is the only signal.'
+        - alert: LabContainerWaiting
+          expr: sum by (namespace, pod, container, reason) (kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName", namespace!~"openshift-.*|kube-.*|default"}) > 0
+          for: 10m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} stuck in {{ $labels.reason }}'
+            description: 'Image pull (Harbor credentials or the Harbor vulnerability policy), or a missing Secret/ConfigMap.'
+        - alert: LabContainerMemoryNearLimit
+          expr: |
+            max by (namespace, pod, container) (container_memory_working_set_bytes{container!="", namespace!~"openshift-.*|kube-.*|default"})
+              / max by (namespace, pod, container) (kube_pod_container_resource_limits{resource="memory", namespace!~"openshift-.*|kube-.*|default"}) > 0.9
+          for: 15m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) at {{ $value | humanizePercentage }} of its memory limit'
+            description: An OOMKill is likely next.
+        - alert: LabContainerCPUThrottled
+          expr: |
+            sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{container!="", namespace!~"openshift-.*|kube-.*|default"}[10m]))
+              / sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{container!="", namespace!~"openshift-.*|kube-.*|default"}[10m])) > 0.5
+          for: 30m
+          labels: {severity: info, tier: workloads}
+          annotations:
+            summary: '{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) throttled {{ $value | humanizePercentage }} of the time'
+            description: CPU limit is constraining it. Latency, not correctness.
+    - name: lab.workloads.controllers
+      rules:
+        - alert: LabDeploymentReplicasMismatch
+          expr: kube_deployment_spec_replicas{namespace!~"openshift-.*|kube-.*|default"} != kube_deployment_status_replicas_available{namespace!~"openshift-.*|kube-.*|default"}
+          for: 15m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: 'Deployment {{ $labels.namespace }}/{{ $labels.deployment }} below desired replicas for 15m'
+        - alert: LabStatefulSetReplicasMismatch
+          expr: kube_statefulset_replicas{namespace!~"openshift-.*|kube-.*|default"} != kube_statefulset_status_replicas_ready{namespace!~"openshift-.*|kube-.*|default"}
+          for: 15m
+          labels: {severity: critical, tier: workloads}
+          annotations:
+            summary: 'StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} below desired replicas for 15m'
+            description: StatefulSets here hold data (Harbor DB/Redis, Kafka, Loki).
+        - alert: LabDaemonSetNotScheduled
+          expr: kube_daemonset_status_desired_number_scheduled{namespace!~"openshift-.*|kube-.*|default"} - kube_daemonset_status_number_ready{namespace!~"openshift-.*|kube-.*|default"} > 0
+          for: 30m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: 'DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset }}: {{ $value }} pod(s) not ready for 30m'
+        - alert: LabJobFailed
+          expr: kube_job_status_failed{namespace!~"openshift-.*|kube-.*|default"} > 0
+          for: 10m
+          labels: {severity: warning, tier: workloads}
+          annotations:
+            summary: 'Job {{ $labels.namespace }}/{{ $labels.job_name }} failed'
+    - name: lab.workloads.storage
+      rules:
+        - alert: LabPVCFilling
+          expr: kubelet_volume_stats_used_bytes{namespace!~"openshift-.*|kube-.*|default"} / kubelet_volume_stats_capacity_bytes > 0.80
+          for: 15m
+          labels: {severity: warning, tier: storage}
+          annotations:
+            summary: 'PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} {{ $value | humanizePercentage }} full'
+        - alert: LabPVCAlmostFull
+          expr: kubelet_volume_stats_used_bytes{namespace!~"openshift-.*|kube-.*|default"} / kubelet_volume_stats_capacity_bytes > 0.92
+          for: 5m
+          labels: {severity: critical, tier: storage}
+          annotations:
+            summary: 'PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} {{ $value | humanizePercentage }} full'
+            description: 'Writes fail at 100%. All PVCs here are on nfs-harbor (ocp-svc:/exports/harbor): check that export too.'
+        - alert: LabPVCInodesLow
+          expr: kubelet_volume_stats_inodes_used{namespace!~"openshift-.*|kube-.*|default"} / kubelet_volume_stats_inodes > 0.90
+          for: 15m
+          labels: {severity: warning, tier: storage}
+          annotations:
+            summary: 'PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} {{ $value | humanizePercentage }} of inodes used'

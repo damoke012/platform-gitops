@@ -1,0 +1,58 @@
+# Applied once by a cluster admin. These are the objects Argo CD (openshift-gitops) is not allowed
+# to create. Each is listed with the reason.
+---
+# The namespace is also declared in apps/. It is created here first so the SCC binding has a home.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab-certs
+  labels: {argocd.argoproj.io/managed-by: openshift-gitops, openshift.io/cluster-monitoring: "true"}
+---
+# x509-nodes reads kubelet and control-plane certificate files via read-only hostPath, as root.
+# hostmount-anyuid permits hostPath and any UID, and is narrower than privileged. Argo CD cannot bind
+# SCC roles.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: x509-nodes-hostmount-anyuid, namespace: lab-certs}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:openshift:scc:hostmount-anyuid}
+subjects: [{kind: ServiceAccount, name: x509-nodes, namespace: lab-certs}]
+---
+# Kafka (namespace kafka, not Argo-managed): scrape Strimzi's JMX exporter (port tcp-prometheus,
+# enabled by metricsConfig in the Kafka CR). Scraped by user-workload monitoring.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: strimzi-kafka, namespace: kafka}
+spec:
+  selector:
+    matchExpressions:
+      - {key: strimzi.io/kind, operator: In, values: [Kafka]}
+  podMetricsEndpoints:
+    - {port: tcp-prometheus, path: /metrics, interval: 60s}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata: {name: lab-kafka, namespace: kafka}
+spec:
+  groups:
+    - name: lab.kafka
+      rules:
+        - alert: KafkaUnderReplicatedPartitions
+          expr: sum(kafka_server_replicamanager_underreplicatedpartitions) > 0
+          for: 10m
+          labels: {severity: warning, tier: kafka}
+          annotations: {summary: '{{ $value }} under-replicated partition(s) in my-cluster', description: 'A broker is behind or down. Durability is reduced until it catches up.'}
+        - alert: KafkaOfflinePartitions
+          expr: sum(kafka_controller_kafkacontroller_offlinepartitionscount) > 0
+          for: 2m
+          labels: {severity: critical, tier: kafka}
+          annotations: {summary: '{{ $value }} offline partition(s) in my-cluster', description: Producers and consumers of these partitions are failing now.}
+        - alert: KafkaNoActiveController
+          expr: sum(kafka_controller_kafkacontroller_activecontrollercount) != 1
+          for: 5m
+          labels: {severity: critical, tier: kafka}
+          annotations: {summary: 'my-cluster has {{ $value }} active controllers (want exactly 1)'}
+        - alert: KafkaMetricsMissing
+          expr: absent(kafka_server_replicamanager_underreplicatedpartitions)
+          for: 30m
+          labels: {severity: warning, tier: kafka}
+          annotations: {summary: No Kafka JMX metrics, description: 'The PodMonitor is not scraping, or the metric names in kafka-metrics-configmap differ from these rules. Kafka alerts are blind.'}
