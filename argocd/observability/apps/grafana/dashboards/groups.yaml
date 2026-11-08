@@ -1,0 +1,45 @@
+# Namespace groups for the lab. Written 2026-11-08 (OCP 4.19.11 home lab).
+#
+# Every non-OpenShift namespace belongs to exactly one entry:
+#   - a group: namespaces that serve one system get one dashboard ("Group: <title>"), with a
+#     namespace picker limited to the group;
+#   - isolated: a namespace that stands alone gets its own dashboard ("Namespace: <name>").
+#
+# generate.py turns this file into one dashboard per entry and into the alert
+# LabNamespaceWithoutDashboard, which fires for any namespace running pods that is not listed here.
+# New namespace: add it below, run `python3 generate.py`, commit both.
+#
+# `extra` adds type-specific panels for what runs in the namespace (jvm, gpu, stateful).
+groups:
+  - id: observability
+    title: Observability stack
+    description: Metrics rules, logs (Loki, Alloy), certificate exporters, Grafana, and the older Alloy in observability.
+    namespaces: [observability, lab-monitoring, lab-logging, lab-certs, obs-grafana]
+    extra: [stateful]
+  - id: gpu-inference
+    title: GPU and inference (forge-cognition)
+    description: NVIDIA GPU operator, the Triton inference service and Parabricks test jobs on the Tesla P40.
+    namespaces: [nvidia-gpu-operator, forge-inference, parabricks-test]
+    extra: [gpu]
+  - id: sandbox
+    title: Sandbox and course namespaces
+    description: Course and troubleshooting namespaces. Usually empty.
+    namespaces: [ai-run-shared, student-damoke012, test-troubleshooting, testinglab]
+
+isolated:
+  - namespace: obs-agent
+    description: 'The observability agent (kg, l1, ingest; l2/l3 scaled to zero). Agent behaviour is on "obs-agent: L1 triage".'
+    extra: [stateful]
+  - namespace: harbor
+    description: 'Container registry. Harbor-specific panels are on "Workload: Harbor".'
+    extra: [stateful]
+  - namespace: kafka
+    description: 'Strimzi Kafka my-cluster. Broker metrics are on "Workload: Kafka".'
+    extra: [jvm, stateful]
+  - namespace: egodeapp
+    description: 'egodeapp and its PostgreSQL. Database panels are on "Workload: PostgreSQL".'
+    extra: [stateful]
+  - namespace: demo
+    description: Argo CD-managed demo application.
+  - namespace: nfs-provisioner
+    description: NFS dynamic provisioner. Every NFS-backed PVC depends on it.

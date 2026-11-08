@@ -60,6 +60,12 @@ data:
         disableDeletion: true
         allowUiUpdates: false
         options: {path: /var/lib/grafana-dashboards}
+      - name: scopes          # one per namespace group or isolated namespace (dashboards/groups.yaml)
+        folder: namespaces
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options: {path: /var/lib/grafana-dashboards-scopes}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -112,6 +118,7 @@ spec:
             - {name: provisioning, mountPath: /etc/grafana/provisioning/datasources/datasources.yaml, subPath: datasources.yaml}
             - {name: provisioning, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml, subPath: dashboards.yaml}
             - {name: dashboards, mountPath: /var/lib/grafana-dashboards}
+            - {name: dashboards-scopes, mountPath: /var/lib/grafana-dashboards-scopes}
             - {name: token, mountPath: /var/run/grafana-token, readOnly: true}
             - {name: service-ca, mountPath: /etc/service-ca, readOnly: true}
       volumes:
@@ -119,6 +126,8 @@ spec:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         - {name: provisioning, configMap: {name: grafana-provisioning}}
         - {name: dashboards, configMap: {name: grafana-dashboards}}
+        # Separate ConfigMap: client-side apply stores the whole object in an annotation capped at 256 KB.
+        - {name: dashboards-scopes, configMap: {name: grafana-dashboards-scopes}}
         - {name: token, secret: {secretName: grafana-thanos-token, items: [{key: token, path: token}]}}
         # Injected into every namespace by the service-ca operator.
         - {name: service-ca, configMap: {name: openshift-service-ca.crt, items: [{key: service-ca.crt, path: service-ca.crt}]}}

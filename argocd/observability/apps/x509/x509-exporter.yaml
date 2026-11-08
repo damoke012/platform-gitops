@@ -93,7 +93,10 @@ spec:
       automountServiceAccountToken: false
       imagePullSecrets: [{name: harbor-pull}]
       tolerations: [{operator: Exists}]
-      securityContext: {runAsUser: 0, seccompProfile: {type: RuntimeDefault}}
+      # No seccompProfile: hostmount-anyuid on OCP 4.19 lists no allowed seccomp profiles, so a pod that
+      # sets one is refused ("seccomp may not be set"); checked with oc adm policy scc-subject-review.
+      # The container still drops ALL capabilities, has no privilege escalation and a read-only rootfs.
+      securityContext: {runAsUser: 0}
       containers:
         - name: exporter
           image: x509-certificate-exporter
@@ -140,7 +143,10 @@ spec:
       imagePullSecrets: [{name: harbor-pull}]
       nodeSelector: {node-role.kubernetes.io/master: ""}
       tolerations: [{operator: Exists}]
-      securityContext: {runAsUser: 0, seccompProfile: {type: RuntimeDefault}}
+      # No seccompProfile: hostmount-anyuid on OCP 4.19 lists no allowed seccomp profiles, so a pod that
+      # sets one is refused ("seccomp may not be set"); checked with oc adm policy scc-subject-review.
+      # The container still drops ALL capabilities, has no privilege escalation and a read-only rootfs.
+      securityContext: {runAsUser: 0}
       containers:
         - name: exporter
           image: x509-certificate-exporter

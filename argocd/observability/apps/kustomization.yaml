@@ -9,6 +9,7 @@ resources:
   - rules/certificates.yaml
   - rules/workloads.yaml
   - rules/platform.yaml
+  - rules/dashboard-coverage.yaml
   - x509
   - logging
   - grafana
