@@ -142,3 +142,20 @@ spec:
           annotations:
             summary: obs-agent has used over 80% of its daily token cap
             description: '{{ $value | printf "%.0f" }} tokens in 24h against LLM_DAILY_TOKEN_CAP=2000000.'
+    - name: obs-agent.coverage
+      rules:
+        # Issue 007: "the agent sees all alerts" is measured by its ingest pod every 5 minutes.
+        - alert: ObsAgentAlertCoverageGap
+          expr: obsagent_alert_coverage_known{namespace="obs-agent"} == 1 and obsagent_alert_coverage_ratio{namespace="obs-agent"} < 1
+          for: 15m
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: 'obs-agent sees {{ $value | humanizePercentage }} of the alerting rules defined in the cluster'
+            description: 'Some PrometheusRule alerts are loaded by no configured source, or by no evaluator at all. Graph status alert_coverage names them. Fix the evaluator selectors or add the source (docs/INTEGRATIONS.md "Full alert coverage").'
+        - alert: ObsAgentAlertCoverageUnknown
+          expr: obsagent_alert_coverage_known{namespace="obs-agent"} == 0
+          for: 30m
+          labels: {severity: warning, team: obs}
+          annotations:
+            summary: obs-agent cannot prove which alerts it sees
+            description: 'It cannot list PrometheusRules or no source answered. Treat triage as possibly blind to some alerts until fixed.'
