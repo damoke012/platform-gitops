@@ -85,10 +85,14 @@ Rollback is the same motion: push the old values. If the VM will not boot, resto
    dispatch `mode=apply` on main. That writes state and touches no VM.
 6. Only then push a resize.
 
-## Preconditions that do not hold today (2026-11-08)
+## Cluster state at the time of writing
 
-- etcd is not 3/3, and the quorum override is still set. Preflight will refuse every resize
-  until cp-1-rp joins and the override is removed. That refusal is correct.
+- **2026-11-08 ~16:00 UTC** (reported by another session, not checked by this pipeline): etcd is
+  3/3, cp-1-rp is a voting member and the quorum override has been removed. So preflight should
+  now pass the etcd checks. cp-1 and cp-2 are still 4 vCPU / 16 GB; cp-3 is 8 / 24.
+- The br-ex IP drops and the 7–8 s etcd fsync (AiChohort issue 005) are still open. A control
+  plane dropping off the network mid-rollout fails the readiness waits, and the run stops with
+  the node cordoned. That is safe, but slow to recover from by hand.
 - `localhost-0` / ocp-svc reachability is intermittent. A queued job waits for the runner for up
   to 24 h and then runs against whatever state the cluster is in. Preflight is what makes that
   safe.
