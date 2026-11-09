@@ -1,6 +1,6 @@
 # Lab secret management: OpenBao + External Secrets Operator
 
-**UNVALIDATED until first sync** (written 2026-11-09). Charts rendered and images passed Harbor's policy;
+**UNVALIDATED until first sync** (written 2026-11-09). First sync attempt failed twice (fixed here: raft storage, Argo CD RBAC for ESO CRDs).
 not yet applied. This README is updated with the result.
 
 Why: every obs-agent secret comes from a secret manager through External Secrets Operator (ESO), never
@@ -10,7 +10,7 @@ Manager; the lab runs OpenBao on-prem, the same contract.
 | Part | What |
 |---|---|
 | `lab-eso` | ESO 2.14.0 (chart pinned), image mirrored to Harbor by digest, UID assigned by restricted-v2 |
-| `lab-openbao` | OpenBao 2.7.2 (chart 0.30.5), standalone, file storage + audit log on PVCs, TLS from the OpenShift service CA, UI at https://openbao.apps.lab.ocp.lan (reencrypt Route) |
+| `lab-openbao` | OpenBao 2.7.2 (chart 0.30.5), standalone, integrated (raft) storage + audit log on PVCs, TLS from the OpenShift service CA, UI at https://openbao.apps.lab.ocp.lan (reencrypt Route) |
 | `lab-secrets-config` | ClusterSecretStore `obs-agent-secrets` (vault provider, Kubernetes auth, usable only from namespace obs-agent) and OpenBao's NetworkPolicy (ESO + router only) |
 | `bootstrap/openbao-init.sh` | one-time init/unseal/config/load, run by a person |
 
@@ -32,6 +32,7 @@ for ns in external-secrets lab-secrets; do
   oc label ns $ns argocd.argoproj.io/managed-by=openshift-gitops --overwrite
   oc -n obs-agent get secret harbor-pull -o json | jq --arg ns $ns '{apiVersion,kind,type,data,metadata:{name:.metadata.name,namespace:$ns}}' | oc apply -f -
 done
+oc apply -f argocd/secrets/bootstrap/argocd-rbac.yaml      # Argo CD may manage ESO's CRDs/webhooks (by name)
 oc apply -f argocd/secrets/bootstrap/applications.yaml
 # when openbao-0 is Running:
 argocd/secrets/bootstrap/openbao-init.sh
