@@ -1,0 +1,19 @@
+# ocp-svc (192.168.22.1): let Tailscale devices query the lab DNS (named) so split DNS for lab.ocp.lan works.
+# Records the change made by hand on 2026-11-09 ~20:15 local (backup /etc/named.conf.pre-tailnet-2026-11-09).
+# Idempotent: re-running changes nothing on ocp-svc as it is now.
+#   ansible-playbook -i 'localhost-0,' -u root infra/ocp-svc/named-tailnet.yml --check --diff
+- name: named answers the tailnet
+  hosts: all
+  become: true
+  tasks:
+    - name: allow-query includes 100.64.0.0/10 (Tailscale CGNAT range)
+      ansible.builtin.lineinfile:
+        path: /etc/named.conf
+        regexp: '^\s*allow-query\s*\{'
+        line: '        allow-query     { localhost; 192.168.22.0/24; 100.64.0.0/10; };  # 100.64/10: Tailscale devices (2026-11-09)'
+        backup: true
+        validate: named-checkconf %s
+      notify: reload named
+  handlers:
+    - name: reload named
+      ansible.builtin.systemd: {name: named, state: reloaded}
